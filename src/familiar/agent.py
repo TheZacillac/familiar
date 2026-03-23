@@ -1,4 +1,4 @@
-"""LangGraph Deep Agent wired to Ollama and tower tools."""
+"""LangGraph Deep Agent with configurable LLM provider."""
 
 import os
 
@@ -6,6 +6,8 @@ from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
 
 from .tools import ALL_TOOLS
+
+DEFAULT_MODEL = "ollama:nemotron-3-nano:latest"
 
 
 def _load_env():
@@ -36,14 +38,26 @@ SYSTEM_PROMPT = (
 )
 
 
+def _build_model_kwargs(model_id: str) -> dict:
+    """Build provider-specific kwargs from environment variables."""
+    kwargs = {}
+    provider = model_id.split(":")[0] if ":" in model_id else None
+
+    if provider == "ollama":
+        base_url = os.environ.get("OLLAMA_BASE_URL")
+        if base_url:
+            kwargs["base_url"] = base_url
+
+    return kwargs
+
+
 def build_agent():
     """Construct and return the LangGraph Deep Agent."""
-    ollama_model = os.environ.get("OLLAMA_MODEL", "nemotron-3-nano:latest")
-    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+    model_id = os.environ.get("FAMILIAR_MODEL", DEFAULT_MODEL)
 
     model = init_chat_model(
-        model=f"ollama:{ollama_model}",
-        base_url=base_url,
+        model=model_id,
+        **_build_model_kwargs(model_id),
     )
 
     agent = create_deep_agent(

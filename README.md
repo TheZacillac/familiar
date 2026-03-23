@@ -1,16 +1,10 @@
 # Familiar
 
-AI agent for domain intelligence, powered by [Deep Agents](https://github.com/langchain-ai/deepagents), LangGraph, and Ollama.
+AI agent for domain intelligence, powered by [Deep Agents](https://github.com/langchain-ai/deepagents) and LangGraph.
 
 Familiar wraps the domain tools from [Tower](../tower/) — giving you a conversational interface to investigate domains, DNS records, WHOIS/RDAP data, TLD information, and domain industry terminology. Built on LangChain's Deep Agents framework for planning, subagent delegation, and context management over long-running tasks.
 
 ## Setup
-
-Requires [Ollama](https://ollama.com/) running locally with a model pulled:
-
-```bash
-ollama pull nemotron-3-nano:latest
-```
 
 Install the project (seer and tome are built from sibling Rust/PyO3 projects):
 
@@ -22,10 +16,26 @@ pip install -e ../seer/seer-py -e ../tome/tome-py
 pip install -e .
 ```
 
-Copy `.env.example` to `.env` and adjust if needed:
+Then install the extra for your chosen LLM provider:
+
+```bash
+pip install -e ".[ollama]"      # Local models via Ollama (default)
+pip install -e ".[openai]"      # OpenAI API
+pip install -e ".[anthropic]"   # Anthropic API
+pip install -e ".[google]"      # Google Gemini API
+pip install -e ".[all]"         # All providers
+```
+
+Copy `.env.example` to `.env` and configure your model:
 
 ```bash
 cp .env.example .env
+```
+
+For local usage with Ollama, pull a model:
+
+```bash
+ollama pull nemotron-3-nano:latest
 ```
 
 ## Usage
@@ -44,10 +54,19 @@ familiar "who owns google.com"
 
 ## Configuration
 
+Set `FAMILIAR_MODEL` in `.env` using `provider:model` format:
+
+| Provider | Example | Required env var |
+|---|---|---|
+| Ollama | `ollama:nemotron-3-nano:latest` | — |
+| OpenAI | `openai:gpt-4o` | `OPENAI_API_KEY` |
+| Anthropic | `anthropic:claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY` |
+| Google | `google_genai:gemini-2.5-pro` | `GOOGLE_API_KEY` |
+
 | Variable | Default | Description |
 |---|---|---|
-| `OLLAMA_MODEL` | `nemotron-3-nano:latest` | Ollama model to use (must support tool calling) |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
+| `FAMILIAR_MODEL` | `ollama:nemotron-3-nano:latest` | LLM to use (must support tool calling) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (only for ollama provider) |
 
 ## Observability (optional)
 

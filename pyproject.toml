@@ -5,18 +5,24 @@ build-backend = "hatchling.build"
 [project]
 name = "familiar"
 version = "0.1.0"
-description = "AI agent for domain intelligence, powered by LangGraph and Ollama"
+description = "AI agent for domain intelligence, powered by Deep Agents and LangGraph"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Zac Roach" }]
 dependencies = [
     "deepagents>=0.4",
-    "langchain-ollama>=0.3",
     "seer>=0.10.2",
     "tome>=0.1.0",
 ]
 
 [project.optional-dependencies]
+ollama = ["langchain-ollama>=0.3"]
+openai = ["langchain-openai>=0.3"]
+anthropic = ["langchain-anthropic>=0.3"]
+google = ["langchain-google-genai>=4.0"]
+all = [
+    "familiar[ollama,openai,anthropic,google]",
+]
 tracing = ["langsmith>=0.3"]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
 
