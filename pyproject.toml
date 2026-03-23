@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "familiar"
+version = "0.1.0"
+description = "AI agent for domain intelligence, powered by LangGraph and Ollama"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Zac Roach" }]
+dependencies = [
+    "langgraph>=0.4",
+    "langchain-ollama>=0.3",
+    "seer>=0.10.2",
+    "tome>=0.1.0",
+]
+
+[project.optional-dependencies]
+tracing = ["langsmith>=0.3"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+familiar = "familiar.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["familiar"]
