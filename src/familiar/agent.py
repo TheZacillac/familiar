@@ -49,7 +49,7 @@ def build_agent():
     agent = create_deep_agent(
         model=model,
         tools=ALL_TOOLS,
-        instructions=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT,
     )
 
     return agent

@@ -1,6 +1,9 @@
 """Simple CLI entry point for the Familiar agent."""
 
 import sys
+import warnings
+
+warnings.filterwarnings("ignore", message="Core Pydantic V1")
 
 from .agent import build_agent
 

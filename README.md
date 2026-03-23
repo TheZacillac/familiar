@@ -57,15 +57,15 @@ Agent runs can be traced via [LangSmith](https://smith.langchain.com/). Install 
 pip install -e ".[tracing]"
 ```
 
-Then set the following in `.env`:
+Then enable tracing in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `LANGSMITH_TRACING` | `true` | Enable LangSmith tracing |
+| `LANGSMITH_TRACING` | `false` | Set to `true` to enable LangSmith tracing |
 | `LANGSMITH_API_KEY` | | Your LangSmith API key |
 | `LANGSMITH_PROJECT` | `familiar` | LangSmith project name |
 
-Traces include every LLM call, tool invocation, and agent step. Without the extra install, the agent runs normally with no tracing.
+Traces include every LLM call, tool invocation, and agent step. Tracing is disabled by default and requires both the extra install and a valid API key.
 
 ## Tools
 
