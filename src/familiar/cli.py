@@ -1,10 +1,12 @@
 """CLI entry point for the Familiar agent."""
 
 import sys
+import uuid
 import warnings
 
 warnings.filterwarnings("ignore", message="Core Pydantic V1")
 
+from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -48,12 +50,13 @@ def _print_response(content: str):
 
 
 def main():
-    agent = build_agent()
-
     if len(sys.argv) > 1:
+        agent = build_agent()
         query = " ".join(sys.argv[1:])
         _run_once(agent, query)
     else:
+        checkpointer = MemorySaver()
+        agent = build_agent(checkpointer=checkpointer)
         _repl(agent)
 
 
@@ -72,7 +75,10 @@ def _run_once(agent, query: str):
 
 
 def _repl(agent):
-    """Interactive chat loop."""
+    """Interactive chat loop with conversation memory."""
+    thread_id = uuid.uuid4().hex
+    config = {"configurable": {"thread_id": thread_id}}
+
     console.print(
         Panel(
             "[muted]Domain intelligence agent — type [bold]quit[/bold] to exit[/muted]",
@@ -97,6 +103,7 @@ def _repl(agent):
             with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
                 result = agent.invoke(
                     {"messages": [{"role": "user", "content": query}]},
+                    config,
                 )
         except Exception as e:
             console.print(f"[error]Error: {e}[/error]")

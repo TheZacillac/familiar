@@ -15,7 +15,11 @@ SYSTEM_PROMPT = (
     "You help users investigate domains, DNS records, WHOIS/RDAP data, "
     "TLD information, and domain industry terminology. "
     "Use your tools to look up real data rather than guessing. "
-    "Be concise and direct in your responses."
+    "Be concise and direct in your responses.\n\n"
+    "When a tool call fails, do not give up. Try alternative tools or approaches "
+    "(e.g., if WHOIS fails, try RDAP; if a specific DNS query times out, try seer prop). "
+    "Present whatever results you gathered successfully and note any gaps. "
+    "Partial results are valuable — always report what you found."
 )
 
 
@@ -111,8 +115,13 @@ def _build_model_kwargs(model_id: str) -> dict:
     return kwargs
 
 
-def build_agent():
-    """Construct and return the LangGraph Deep Agent."""
+def build_agent(checkpointer=None):
+    """Construct and return the LangGraph Deep Agent.
+
+    Args:
+        checkpointer: Optional LangGraph checkpointer for persisting conversation
+            state between invocations. Pass a MemorySaver for REPL sessions.
+    """
     _load_env()
     model_id = os.environ.get("FAMILIAR_MODEL", DEFAULT_MODEL)
 
@@ -125,6 +134,7 @@ def build_agent():
         model=model,
         tools=ALL_TOOLS,
         system_prompt=_build_system_prompt(),
+        checkpointer=checkpointer,
     )
 
     return agent
