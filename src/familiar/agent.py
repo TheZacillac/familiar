@@ -32,6 +32,9 @@ def _load_env():
                 continue
             key, _, value = line.partition("=")
             key, value = key.strip(), value.strip()
+            # Strip surrounding quotes (common .env convention)
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
             if key and value:
                 os.environ.setdefault(key, value)
 
@@ -52,7 +55,10 @@ def _load_skill_docs() -> str:
         ref_dir = scrolls.skill_path(name) / "reference"
         if ref_dir.is_dir():
             for ref_file in sorted(ref_dir.glob("*.md")):
-                ref_content = ref_file.read_text().strip()
+                try:
+                    ref_content = ref_file.read_text().strip()
+                except OSError:
+                    continue
                 if ref_content:
                     sections.append(ref_content)
 
@@ -85,11 +91,9 @@ def _build_model_kwargs(model_id: str) -> dict:
     return kwargs
 
 
-_load_env()
-
-
 def build_agent():
     """Construct and return the LangGraph Deep Agent."""
+    _load_env()
     model_id = os.environ.get("FAMILIAR_MODEL", DEFAULT_MODEL)
 
     model = init_chat_model(

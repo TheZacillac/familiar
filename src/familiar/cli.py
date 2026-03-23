@@ -59,8 +59,12 @@ def main():
 
 def _run_once(agent, query: str):
     """Run a single query and print the response."""
-    with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
-        result = agent.invoke({"messages": [{"role": "user", "content": query}]})
+    try:
+        with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
+            result = agent.invoke({"messages": [{"role": "user", "content": query}]})
+    except Exception as e:
+        console.print(f"[error]Error: {e}[/error]")
+        sys.exit(1)
 
     msg = result["messages"][-1]
     if msg.content:
@@ -89,10 +93,15 @@ def _repl(agent):
         if not query.strip() or query.strip().lower() in ("quit", "exit"):
             break
 
-        with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
-            result = agent.invoke(
-                {"messages": [{"role": "user", "content": query}]},
-            )
+        try:
+            with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
+                result = agent.invoke(
+                    {"messages": [{"role": "user", "content": query}]},
+                )
+        except Exception as e:
+            console.print(f"[error]Error: {e}[/error]")
+            console.print()
+            continue
 
         msg = result["messages"][-1]
         if msg.content:
