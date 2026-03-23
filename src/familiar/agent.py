@@ -1,16 +1,16 @@
-"""LangGraph ReAct agent wired to Ollama and tower tools."""
+"""LangGraph Deep Agent wired to Ollama and tower tools."""
 
 import os
 
-from langchain_ollama import ChatOllama
-from langgraph.prebuilt import create_react_agent
+from langchain.chat_models import init_chat_model
+from deepagents import create_deep_agent
 
 from .tools import ALL_TOOLS
 
 
 def _load_env():
     """Load .env file if present, without requiring python-dotenv."""
-    env_path = os.path.join(os.path.dirname(__file__), os.pardir, ".env")
+    env_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, ".env")
     env_path = os.path.normpath(env_path)
     if not os.path.isfile(env_path):
         return
@@ -37,16 +37,19 @@ SYSTEM_PROMPT = (
 
 
 def build_agent():
-    """Construct and return the LangGraph ReAct agent."""
-    model = ChatOllama(
-        model=os.environ.get("OLLAMA_MODEL", "qwen2.5:latest"),
-        base_url=os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
+    """Construct and return the LangGraph Deep Agent."""
+    ollama_model = os.environ.get("OLLAMA_MODEL", "nemotron-3-nano:latest")
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+    model = init_chat_model(
+        model=f"ollama:{ollama_model}",
+        base_url=base_url,
     )
 
-    agent = create_react_agent(
+    agent = create_deep_agent(
         model=model,
         tools=ALL_TOOLS,
-        prompt=SYSTEM_PROMPT,
+        instructions=SYSTEM_PROMPT,
     )
 
     return agent

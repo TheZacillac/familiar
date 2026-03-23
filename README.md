@@ -1,27 +1,31 @@
 # Familiar
 
-AI agent for domain intelligence, powered by LangGraph and Ollama.
+AI agent for domain intelligence, powered by [Deep Agents](https://github.com/langchain-ai/deepagents), LangGraph, and Ollama.
 
-Familiar wraps the domain tools from [Tower](../tower/) — giving you a conversational interface to investigate domains, DNS records, WHOIS/RDAP data, TLD information, and domain industry terminology.
+Familiar wraps the domain tools from [Tower](../tower/) — giving you a conversational interface to investigate domains, DNS records, WHOIS/RDAP data, TLD information, and domain industry terminology. Built on LangChain's Deep Agents framework for planning, subagent delegation, and context management over long-running tasks.
 
 ## Setup
 
+Requires [Ollama](https://ollama.com/) running locally with a model pulled:
+
 ```bash
-python -m venv .venv
+ollama pull nemotron-3-nano:latest
+```
+
+Install the project (seer and tome are built from sibling Rust/PyO3 projects):
+
+```bash
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e . --find-links ../seer/seer-py --find-links ../tome/tome-py
+pip install maturin
+pip install -e ../seer/seer-py -e ../tome/tome-py
+pip install -e .
 ```
 
 Copy `.env.example` to `.env` and adjust if needed:
 
 ```bash
 cp .env.example .env
-```
-
-Requires [Ollama](https://ollama.com/) running locally with a model pulled:
-
-```bash
-ollama pull qwen2.5:latest
 ```
 
 ## Usage
@@ -42,7 +46,7 @@ familiar "who owns google.com"
 
 | Variable | Default | Description |
 |---|---|---|
-| `OLLAMA_MODEL` | `qwen2.5:latest` | Ollama model to use |
+| `OLLAMA_MODEL` | `nemotron-3-nano:latest` | Ollama model to use (must support tool calling) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
 
 ## Observability (optional)
@@ -50,7 +54,7 @@ familiar "who owns google.com"
 Agent runs can be traced via [LangSmith](https://smith.langchain.com/). Install the optional dependency:
 
 ```bash
-pip install -e ".[tracing]" --find-links ../seer/seer-py --find-links ../tome/tome-py
+pip install -e ".[tracing]"
 ```
 
 Then set the following in `.env`:

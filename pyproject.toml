@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Zac Roach" }]
 dependencies = [
-    "langgraph>=0.4",
+    "deepagents>=0.4",
     "langchain-ollama>=0.3",
     "seer>=0.10.2",
     "tome>=0.1.0",
@@ -24,4 +24,4 @@ dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
 familiar = "familiar.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["familiar"]
+packages = ["src/familiar"]
