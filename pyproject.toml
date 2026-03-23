@@ -11,6 +11,7 @@ license = { text = "MIT" }
 authors = [{ name = "Zac Roach" }]
 dependencies = [
     "deepagents>=0.4",
+    "scrolls>=0.1.0",
     "seer>=0.10.2",
     "tome>=0.1.0",
 ]

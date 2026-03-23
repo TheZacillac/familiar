@@ -2,7 +2,7 @@
 
 AI agent for domain intelligence, powered by [Deep Agents](https://github.com/langchain-ai/deepagents) and LangGraph.
 
-Familiar wraps the domain tools from [Tower](../tower/) — giving you a conversational interface to investigate domains, DNS records, WHOIS/RDAP data, TLD information, and domain industry terminology. Built on LangChain's Deep Agents framework for planning, subagent delegation, and context management over long-running tasks.
+Familiar wraps the domain tools from [Tower](../tower/) — giving you a conversational interface to investigate domains, DNS records, WHOIS/RDAP data, TLD information, and domain industry terminology. Built on LangChain's Deep Agents framework for planning, subagent delegation, and context management over long-running tasks. Skill documentation from [Scrolls](../scrolls/) is loaded into the agent's system prompt at startup, giving it detailed knowledge of each tool's capabilities.
 
 ## Setup
 
@@ -12,7 +12,7 @@ Install the project (seer and tome are built from sibling Rust/PyO3 projects):
 python3 -m venv .venv
 source .venv/bin/activate
 pip install maturin
-pip install -e ../seer/seer-py -e ../tome/tome-py
+pip install -e ../seer/seer-py -e ../tome/tome-py -e ../scrolls
 pip install -e .
 ```
 
