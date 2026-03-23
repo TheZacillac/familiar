@@ -39,28 +39,48 @@ def _load_env():
                 os.environ.setdefault(key, value)
 
 
+def _load_skill_dir(skill_dir, heading_prefix="##") -> list[str]:
+    """Load SKILL.md and reference docs from a skill directory."""
+    sections = []
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        return sections
+
+    try:
+        content = skill_md.read_text().strip()
+    except OSError:
+        return sections
+    if content:
+        sections.append(f"{heading_prefix} {skill_dir.name.replace('-', ' ').title()} Skill Reference\n\n{content}")
+
+    # Load reference docs if available
+    ref_dir = skill_dir / "reference"
+    if ref_dir.is_dir():
+        for ref_file in sorted(ref_dir.glob("*.md")):
+            try:
+                ref_content = ref_file.read_text().strip()
+            except OSError:
+                continue
+            if ref_content:
+                sections.append(ref_content)
+
+    # Recurse into sub-skills (e.g., other/email-auth/, other/typosquatting/)
+    for child in sorted(skill_dir.iterdir()):
+        if child.is_dir() and not child.name.startswith(("_", ".")) and child.name != "reference":
+            sections.extend(_load_skill_dir(child, heading_prefix=heading_prefix + "#"))
+
+    return sections
+
+
 def _load_skill_docs() -> str:
     """Load skill documentation from scrolls to enrich the system prompt."""
     sections = []
     for name in scrolls.list_skills():
         try:
-            path = scrolls.skill_file(name)
-            content = path.read_text().strip()
-            if content:
-                sections.append(f"## {name.title()} Skill Reference\n\n{content}")
+            skill_dir = scrolls.skill_path(name)
         except FileNotFoundError:
             continue
-
-        # Load reference docs if available
-        ref_dir = scrolls.skill_path(name) / "reference"
-        if ref_dir.is_dir():
-            for ref_file in sorted(ref_dir.glob("*.md")):
-                try:
-                    ref_content = ref_file.read_text().strip()
-                except OSError:
-                    continue
-                if ref_content:
-                    sections.append(ref_content)
+        sections.extend(_load_skill_dir(skill_dir))
 
     return "\n\n---\n\n".join(sections)
 
