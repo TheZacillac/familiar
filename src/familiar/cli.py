@@ -1,11 +1,50 @@
-"""Simple CLI entry point for the Familiar agent."""
+"""CLI entry point for the Familiar agent."""
 
 import sys
 import warnings
 
 warnings.filterwarnings("ignore", message="Core Pydantic V1")
 
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.theme import Theme
+
 from .agent import build_agent
+
+# Catppuccin Mocha palette
+CATPPUCCIN = Theme(
+    {
+        "info": "#8caaee",        # Blue
+        "warning": "#e5c890",     # Yellow
+        "error": "#e78284",       # Red
+        "success": "#a6d189",     # Green
+        "prompt": "bold #a6d189", # Green
+        "title": "bold #ca9ee6",  # Mauve
+        "border": "#babbf1",      # Lavender
+        "muted": "#a5adce",       # Subtext0
+        "spinner": "#81c8be",     # Teal
+        "accent": "#f4b8e4",      # Pink
+        "peach": "#ef9f76",       # Peach
+        "sky": "#99d1db",         # Sky
+    }
+)
+
+console = Console(theme=CATPPUCCIN)
+
+
+def _print_response(content: str):
+    """Render agent response as markdown in a styled panel."""
+    md = Markdown(content)
+    console.print(
+        Panel(
+            md,
+            title="[title]familiar[/title]",
+            title_align="left",
+            border_style="border",
+        )
+    )
 
 
 def main():
@@ -20,34 +59,43 @@ def main():
 
 def _run_once(agent, query: str):
     """Run a single query and print the response."""
-    for chunk in agent.stream(
-        {"messages": [{"role": "user", "content": query}]},
-        stream_mode="values",
-    ):
-        msg = chunk["messages"][-1]
-        if msg.type == "ai" and msg.content:
-            print(msg.content)
+    with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
+        result = agent.invoke({"messages": [{"role": "user", "content": query}]})
+
+    msg = result["messages"][-1]
+    if msg.content:
+        _print_response(msg.content)
 
 
 def _repl(agent):
     """Interactive chat loop."""
-    print("Familiar — domain intelligence agent (type 'quit' to exit)")
-    print()
+    console.print(
+        Panel(
+            "[muted]Domain intelligence agent — type [bold]quit[/bold] to exit[/muted]",
+            title="[title]familiar[/title]",
+            title_align="left",
+            border_style="border",
+        )
+    )
+    console.print()
 
     while True:
         try:
-            query = input("you> ").strip()
+            query = Prompt.ask("[prompt]you[/prompt]", console=console)
         except (EOFError, KeyboardInterrupt):
-            print()
+            console.print()
             break
 
-        if not query or query.lower() in ("quit", "exit"):
+        if not query.strip() or query.strip().lower() in ("quit", "exit"):
             break
 
-        for chunk in agent.stream(
-            {"messages": [{"role": "user", "content": query}]},
-            stream_mode="values",
-        ):
-            msg = chunk["messages"][-1]
-            if msg.type == "ai" and msg.content:
-                print(f"\nfamiliar> {msg.content}\n")
+        with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": query}]},
+            )
+
+        msg = result["messages"][-1]
+        if msg.content:
+            console.print()
+            _print_response(msg.content)
+            console.print()
