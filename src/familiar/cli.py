@@ -136,10 +136,12 @@ def _print_response(content: str):
 def _invoke_agent(agent, query: str, config: dict) -> str | None:
     """Invoke the agent and print the response. Returns content or None."""
     global _last_response
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    content = f"[Current date/time: {now}]\n\n{query}"
     try:
         with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
             result = agent.invoke(
-                {"messages": [{"role": "user", "content": query}]},
+                {"messages": [{"role": "user", "content": content}]},
                 config,
             )
     except Exception as e:
