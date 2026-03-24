@@ -1,6 +1,7 @@
 """Advisory tools that compose seer and tome for domain strategy intelligence."""
 
 import json
+import re
 
 import seer
 import tome
@@ -612,4 +613,598 @@ ADVISOR_TOOLS = [
     audit_portfolio,
     competitive_intel,
     migration_preflight,
+]
+
+
+# --- Composite Advisor Tools ---
+
+
+@tool
+def security_audit(domain: str) -> str:
+    """Run a comprehensive security audit on a domain. Checks SSL certificate health,
+    DNSSEC configuration, email security (SPF, DMARC, DKIM), HTTP headers, and DNS
+    configuration."""
+    domain = domain.lower().strip()
+
+    # SSL certificate analysis
+    ssl_data = safe_call(seer.ssl, domain)
+    ssl_health = {"status": "unknown"}
+    if ssl_data and isinstance(ssl_data, dict):
+        ssl_health = {
+            "valid": ssl_data.get("valid", False),
+            "issuer": ssl_data.get("issuer"),
+            "expiry": ssl_data.get("not_after") or ssl_data.get("expiry"),
+            "sans": ssl_data.get("sans") or ssl_data.get("subject_alt_names"),
+            "protocol": ssl_data.get("protocol") or ssl_data.get("tls_version"),
+        }
+        if ssl_health.get("expiry"):
+            days_left = _days_until(ssl_health["expiry"])
+            if days_left is not None:
+                ssl_health["days_until_expiry"] = days_left
+                if days_left < 7:
+                    ssl_health["status"] = "critical"
+                elif days_left < 30:
+                    ssl_health["status"] = "warning"
+                else:
+                    ssl_health["status"] = "healthy"
+            else:
+                ssl_health["status"] = "healthy" if ssl_health.get("valid") else "critical"
+        else:
+            ssl_health["status"] = "healthy" if ssl_health.get("valid") else "critical"
+    elif ssl_data is None:
+        ssl_health = {"status": "critical", "error": "Could not retrieve SSL certificate"}
+
+    # DNSSEC status
+    dnssec_data = safe_call(seer.dnssec, domain)
+    dnssec_status = {"status": "unknown"}
+    if dnssec_data and isinstance(dnssec_data, dict):
+        dnssec_status = {
+            "enabled": dnssec_data.get("enabled", False),
+            "valid": dnssec_data.get("valid", False),
+            "ds_records": dnssec_data.get("ds_records"),
+            "dnskey_records": dnssec_data.get("dnskey_records"),
+            "issues": dnssec_data.get("issues") or [],
+            "status": "healthy" if dnssec_data.get("valid") else (
+                "warning" if dnssec_data.get("enabled") else "not_configured"
+            ),
+        }
+    elif dnssec_data is None:
+        dnssec_status = {"status": "unknown", "error": "Could not check DNSSEC"}
+
+    # Email security: SPF, DMARC, DKIM indicators
+    txt_records = safe_call(seer.dig, domain, "TXT")
+    dmarc_records = safe_call(seer.dig, "_dmarc." + domain, "TXT")
+    mx_records = safe_call(seer.dig, domain, "MX")
+
+    email_security = {
+        "has_mx": bool(mx_records),
+        "spf": {"found": False},
+        "dmarc": {"found": False},
+        "dkim_indicator": False,
+    }
+
+    if txt_records and isinstance(txt_records, list):
+        for record in txt_records:
+            record_str = str(record).lower()
+            if "v=spf1" in record_str:
+                email_security["spf"] = {"found": True, "record": str(record)}
+                # Check for common SPF issues
+                if "-all" in record_str:
+                    email_security["spf"]["policy"] = "strict"
+                elif "~all" in record_str:
+                    email_security["spf"]["policy"] = "softfail"
+                elif "?all" in record_str:
+                    email_security["spf"]["policy"] = "neutral"
+                elif "+all" in record_str:
+                    email_security["spf"]["policy"] = "permissive_INSECURE"
+
+    if dmarc_records and isinstance(dmarc_records, list):
+        for record in dmarc_records:
+            record_str = str(record).lower()
+            if "v=dmarc1" in record_str:
+                email_security["dmarc"] = {"found": True, "record": str(record)}
+                if "p=reject" in record_str:
+                    email_security["dmarc"]["policy"] = "reject"
+                elif "p=quarantine" in record_str:
+                    email_security["dmarc"]["policy"] = "quarantine"
+                elif "p=none" in record_str:
+                    email_security["dmarc"]["policy"] = "none_MONITORING_ONLY"
+
+    # HTTP security check via status
+    status_data = safe_call(seer.status, domain)
+    http_security = {"status": "unknown"}
+    if status_data and isinstance(status_data, dict):
+        http_security = {
+            "http_status": status_data.get("http_status"),
+            "ssl_valid": status_data.get("ssl_valid", False),
+            "redirects_to_https": status_data.get("final_url", "").startswith("https://")
+            if status_data.get("final_url") else None,
+            "status": "healthy" if status_data.get("ssl_valid") else "warning",
+        }
+
+    # Compile recommendations
+    recommendations = []
+    risk_score = 0  # 0 = low, accumulate points
+
+    if ssl_health.get("status") == "critical":
+        recommendations.append("CRITICAL: Fix SSL certificate immediately — expired, invalid, or missing")
+        risk_score += 3
+    elif ssl_health.get("status") == "warning":
+        recommendations.append("WARNING: SSL certificate expiring soon — renew within 30 days")
+        risk_score += 1
+
+    if dnssec_status.get("status") == "not_configured":
+        recommendations.append("Enable DNSSEC to protect against DNS spoofing attacks")
+        risk_score += 1
+
+    if email_security["has_mx"]:
+        if not email_security["spf"]["found"]:
+            recommendations.append("IMPORTANT: Add SPF record to prevent email spoofing")
+            risk_score += 2
+        elif email_security["spf"].get("policy") == "permissive_INSECURE":
+            recommendations.append("CRITICAL: SPF record uses +all which allows anyone to send as your domain")
+            risk_score += 3
+        if not email_security["dmarc"]["found"]:
+            recommendations.append("IMPORTANT: Add DMARC record for email authentication policy")
+            risk_score += 2
+        elif email_security["dmarc"].get("policy") == "none_MONITORING_ONLY":
+            recommendations.append("Consider upgrading DMARC policy from 'none' to 'quarantine' or 'reject'")
+            risk_score += 1
+
+    if http_security.get("redirects_to_https") is False:
+        recommendations.append("Configure HTTP to HTTPS redirect for all traffic")
+        risk_score += 1
+
+    if not http_security.get("ssl_valid"):
+        risk_score += 2
+
+    # Determine overall risk rating
+    if risk_score >= 5:
+        overall_risk = "critical"
+    elif risk_score >= 3:
+        overall_risk = "high"
+    elif risk_score >= 1:
+        overall_risk = "medium"
+    else:
+        overall_risk = "low"
+
+    return json.dumps({
+        "domain": domain,
+        "overall_risk": overall_risk,
+        "risk_score": risk_score,
+        "ssl_health": ssl_health,
+        "dnssec_status": dnssec_status,
+        "email_security": email_security,
+        "http_security": http_security,
+        "recommendations": recommendations,
+    }, default=str)
+
+
+@tool
+def brand_protection_scan(brand: str, primary_domain: str) -> str:
+    """Scan for brand protection issues: typosquatting variants, available defensive
+    registrations, and subdomain exposure via CT logs."""
+    brand = brand.lower().strip().replace(" ", "")
+    primary_domain = primary_domain.lower().strip()
+
+    # Generate common typo variants
+    variants = set()
+
+    # Character swaps (adjacent transpositions)
+    for i in range(len(brand) - 1):
+        swapped = brand[:i] + brand[i + 1] + brand[i] + brand[i + 2:]
+        variants.add(swapped)
+
+    # Missing characters
+    for i in range(len(brand)):
+        variants.add(brand[:i] + brand[i + 1:])
+
+    # Doubled characters
+    for i in range(len(brand)):
+        variants.add(brand[:i] + brand[i] * 2 + brand[i + 1:])
+
+    # Common character substitutions
+    _substitutions = {
+        "o": "0", "0": "o",
+        "l": "1", "1": "l",
+        "i": "1",
+        "s": "5", "5": "s",
+        "a": "4",
+        "e": "3",
+    }
+    for i, char in enumerate(brand):
+        if char in _substitutions:
+            variants.add(brand[:i] + _substitutions[char] + brand[i + 1:])
+
+    # Remove the original brand from variants
+    variants.discard(brand)
+
+    # Cap typo variants for network checks
+    typo_variants = list(variants)[:20]
+
+    # Build domains to check: typo variants on .com
+    typo_domains = [f"{v}.com" for v in typo_variants]
+
+    # Check TLD variants of the actual brand
+    key_tlds = ["com", "net", "org", "io", "co"]
+    tld_domains = [f"{brand}.{tld}" for tld in key_tlds]
+
+    # Check availability of typo domains
+    available_variants = []
+    taken_variants = []
+    for td in typo_domains:
+        result = safe_call(seer.availability, td)
+        if result and isinstance(result, dict):
+            if result.get("available", False):
+                available_variants.append({"domain": td, "status": "available"})
+            else:
+                taken_variants.append({"domain": td, "status": "taken", "details": result})
+        else:
+            taken_variants.append({"domain": td, "status": "unknown"})
+
+    # Check TLD coverage
+    tld_coverage = {}
+    for td in tld_domains:
+        result = safe_call(seer.availability, td)
+        if result and isinstance(result, dict):
+            tld_coverage[td] = {
+                "available": result.get("available", False),
+                "details": result,
+            }
+        else:
+            tld_coverage[td] = {"available": None, "status": "unknown"}
+
+    # Subdomain exposure via CT logs
+    subdomain_data = safe_call(seer.subdomains, primary_domain)
+    subdomain_exposure = {"count": 0, "subdomains": []}
+    if subdomain_data and isinstance(subdomain_data, dict):
+        subs = subdomain_data.get("subdomains") or subdomain_data.get("results") or []
+        subdomain_exposure = {
+            "count": len(subs),
+            "subdomains": subs[:50],  # Cap display at 50
+        }
+    elif subdomain_data and isinstance(subdomain_data, list):
+        subdomain_exposure = {
+            "count": len(subdomain_data),
+            "subdomains": subdomain_data[:50],
+        }
+
+    return json.dumps({
+        "brand": brand,
+        "primary_domain": primary_domain,
+        "typo_variants_checked": len(typo_domains),
+        "available_variants": available_variants,
+        "taken_variants": taken_variants,
+        "tld_coverage": tld_coverage,
+        "subdomain_exposure": subdomain_exposure,
+        "recommendations": [
+            f"Register {len(available_variants)} available typosquatting variants for defensive protection"
+            if available_variants else "No immediate typosquatting variants available to register",
+            f"{subdomain_exposure['count']} subdomains exposed via Certificate Transparency logs"
+            if subdomain_exposure["count"] > 0 else "No subdomain exposure detected via CT logs",
+        ],
+    }, default=str)
+
+
+@tool
+def dns_health_check(domain: str) -> str:
+    """Comprehensive DNS health check: record completeness, propagation consistency,
+    nameserver comparison, and best practice compliance."""
+    domain = domain.lower().strip()
+
+    # Check essential record types
+    essential_types = ["A", "AAAA", "MX", "NS", "SOA", "TXT", "CAA"]
+    records_found = {}
+    records_missing = []
+
+    for rtype in essential_types:
+        result = safe_call(seer.dig, domain, rtype)
+        if result:
+            records_found[rtype] = result
+        else:
+            records_missing.append(rtype)
+
+    # Propagation check for A records
+    propagation_status = safe_call(seer.propagation, domain, "A")
+
+    # Nameserver consistency check
+    nameserver_consistency = None
+    ns_records = records_found.get("NS")
+    if ns_records and isinstance(ns_records, list) and len(ns_records) >= 2:
+        ns_a = str(ns_records[0]).rstrip(".")
+        ns_b = str(ns_records[1]).rstrip(".")
+        compare_result = safe_call(seer.dns_compare, domain, "A", ns_a, ns_b)
+        if compare_result:
+            nameserver_consistency = {
+                "server_a": ns_a,
+                "server_b": ns_b,
+                "comparison": compare_result,
+            }
+
+    # Parse TXT records for SPF
+    spf_found = False
+    spf_issues = []
+    if records_found.get("TXT") and isinstance(records_found["TXT"], list):
+        spf_records = [r for r in records_found["TXT"] if "v=spf1" in str(r).lower()]
+        if spf_records:
+            spf_found = True
+            if len(spf_records) > 1:
+                spf_issues.append("Multiple SPF records found — only one is allowed per RFC 7208")
+
+    # SOA serial format check
+    soa_info = None
+    if records_found.get("SOA"):
+        soa = records_found["SOA"]
+        soa_info = {"record": soa}
+        # SOA serial is typically in YYYYMMDDNN format
+        soa_str = str(soa)
+        # Try to extract serial number (usually the first large number in SOA)
+        serial_match = re.search(r'\b(\d{8,10})\b', soa_str)
+        if serial_match:
+            serial = serial_match.group(1)
+            soa_info["serial"] = serial
+            if len(serial) >= 10 and serial[:4].isdigit():
+                soa_info["format"] = "date-based (YYYYMMDDNN)"
+            else:
+                soa_info["format"] = "numeric"
+
+    # Recommendations
+    recommendations = []
+    best_practices_met = 0
+    total_practices = 7
+
+    # 1. Has A record
+    if "A" in records_found:
+        best_practices_met += 1
+    else:
+        recommendations.append("No A record found — domain will not resolve to an IPv4 address")
+
+    # 2. Has AAAA record (IPv6)
+    if "AAAA" in records_found:
+        best_practices_met += 1
+    else:
+        recommendations.append("No AAAA record — consider adding IPv6 support")
+
+    # 3. Has NS records (at least 2)
+    if ns_records and isinstance(ns_records, list) and len(ns_records) >= 2:
+        best_practices_met += 1
+    else:
+        recommendations.append("Ensure at least 2 nameservers for redundancy")
+
+    # 4. Has SOA record
+    if "SOA" in records_found:
+        best_practices_met += 1
+    else:
+        recommendations.append("Missing SOA record — critical for zone authority")
+
+    # 5. Has SPF
+    if spf_found:
+        best_practices_met += 1
+    else:
+        if "MX" in records_found:
+            recommendations.append("Has MX records but no SPF — add SPF to prevent email spoofing")
+        else:
+            recommendations.append("No SPF record found")
+
+    # 6. Has CAA record
+    if "CAA" in records_found:
+        best_practices_met += 1
+    else:
+        recommendations.append("No CAA record — add to restrict which CAs can issue certificates")
+
+    # 7. Has MX
+    if "MX" in records_found:
+        best_practices_met += 1
+
+    health_score = round((best_practices_met / total_practices) * 100)
+
+    return json.dumps({
+        "domain": domain,
+        "health_score": health_score,
+        "best_practices_met": f"{best_practices_met}/{total_practices}",
+        "records_found": records_found,
+        "records_missing": records_missing,
+        "propagation_status": propagation_status,
+        "nameserver_consistency": nameserver_consistency,
+        "soa_info": soa_info,
+        "spf_status": {"found": spf_found, "issues": spf_issues},
+        "recommendations": recommendations,
+    }, default=str)
+
+
+@tool
+def domain_timeline(domain: str) -> str:
+    """Build a timeline of key events and current state for a domain: registration dates,
+    DNS setup, SSL certificates, and current infrastructure."""
+    domain = domain.lower().strip()
+
+    # Registration data for dates
+    reg_data = safe_call(seer.lookup, domain)
+
+    # DNS infrastructure
+    dns_a = safe_call(seer.dig, domain, "A")
+    dns_ns = safe_call(seer.dig, domain, "NS")
+
+    # SSL certificate dates
+    ssl_data = safe_call(seer.ssl, domain)
+
+    # Current HTTP status
+    status_data = safe_call(seer.status, domain)
+
+    # Build timeline events
+    timeline = []
+
+    if reg_data and isinstance(reg_data, dict) and not reg_data.get("error"):
+        created = reg_data.get("created") or reg_data.get("creation_date")
+        if created:
+            timeline.append({
+                "date": str(created)[:10],
+                "event": "domain_registered",
+                "detail": f"Domain registered via {reg_data.get('registrar', 'unknown registrar')}",
+            })
+
+        updated = reg_data.get("updated") or reg_data.get("last_updated")
+        if updated:
+            timeline.append({
+                "date": str(updated)[:10],
+                "event": "registration_updated",
+                "detail": "WHOIS/RDAP record last updated",
+            })
+
+        expiry = reg_data.get("expiry") or reg_data.get("expiration_date")
+        if expiry:
+            days_left = _days_until(expiry)
+            timeline.append({
+                "date": str(expiry)[:10],
+                "event": "domain_expires",
+                "detail": f"Registration expires ({days_left} days remaining)" if days_left is not None else "Registration expiry date",
+            })
+
+    if ssl_data and isinstance(ssl_data, dict):
+        not_before = ssl_data.get("not_before") or ssl_data.get("valid_from")
+        not_after = ssl_data.get("not_after") or ssl_data.get("expiry") or ssl_data.get("valid_to")
+        issuer = ssl_data.get("issuer", "unknown CA")
+
+        if not_before:
+            timeline.append({
+                "date": str(not_before)[:10],
+                "event": "ssl_certificate_issued",
+                "detail": f"Current SSL certificate issued by {issuer}",
+            })
+        if not_after:
+            ssl_days = _days_until(not_after)
+            timeline.append({
+                "date": str(not_after)[:10],
+                "event": "ssl_certificate_expires",
+                "detail": f"SSL certificate expires ({ssl_days} days remaining)" if ssl_days is not None else "SSL certificate expiry",
+            })
+
+    # Sort timeline chronologically
+    timeline.sort(key=lambda e: e["date"])
+
+    # Current state summary
+    current_state = {
+        "domain": domain,
+        "a_records": dns_a if dns_a else None,
+        "nameservers": dns_ns if dns_ns else None,
+        "registrar": reg_data.get("registrar") if reg_data and isinstance(reg_data, dict) else None,
+        "http_status": status_data.get("http_status") if status_data and isinstance(status_data, dict) else None,
+        "ssl_valid": status_data.get("ssl_valid") if status_data and isinstance(status_data, dict) else None,
+    }
+
+    return json.dumps({
+        "domain": domain,
+        "timeline": timeline,
+        "current_state": current_state,
+        "registration": reg_data,
+    }, default=str)
+
+
+@tool
+def expiration_alert(domains: str = "") -> str:
+    """Check expiration status for watchlist domains or a provided comma-separated list.
+    Flags domains by urgency: critical (<7 days), warning (<30 days), upcoming (<90 days)."""
+    from .memory_tools import get_memory
+
+    domain_list = []
+    source = "provided"
+
+    if not domains or not domains.strip():
+        # Get watchlist domains from memory
+        mem = get_memory()
+        watched = mem.watchlist_list()
+        domain_list = [w["domain"] for w in watched]
+        source = "watchlist"
+    else:
+        domain_list = [d.strip().lower() for d in domains.split(",") if d.strip()]
+
+    if not domain_list:
+        return json.dumps({
+            "error": "No domains to check. Provide a comma-separated list or add domains to the watchlist.",
+            "source": source,
+        })
+
+    # Cap at 50 domains
+    if len(domain_list) > 50:
+        domain_list = domain_list[:50]
+
+    # Bulk lookup for expiry dates
+    bulk_results = safe_call(seer.bulk_lookup, domain_list) or [None] * len(domain_list)
+    if not isinstance(bulk_results, list):
+        bulk_results = [None] * len(domain_list)
+
+    critical = []   # <7 days
+    warning = []    # <30 days
+    upcoming = []   # <90 days
+    healthy = []    # >90 days
+    unknown = []    # Could not determine
+
+    for i, domain in enumerate(domain_list):
+        result = bulk_results[i] if i < len(bulk_results) else None
+        entry = {"domain": domain}
+
+        if result and isinstance(result, dict) and not result.get("error"):
+            expiry = result.get("expiry") or result.get("expiration_date")
+            registrar = result.get("registrar")
+            entry["expiry"] = str(expiry) if expiry else None
+            entry["registrar"] = registrar
+
+            if expiry:
+                days_left = _days_until(expiry)
+                if days_left is not None:
+                    entry["days_remaining"] = days_left
+                    if days_left < 0:
+                        entry["urgency"] = "expired"
+                        critical.append(entry)
+                    elif days_left < 7:
+                        entry["urgency"] = "critical"
+                        critical.append(entry)
+                    elif days_left < 30:
+                        entry["urgency"] = "warning"
+                        warning.append(entry)
+                    elif days_left < 90:
+                        entry["urgency"] = "upcoming"
+                        upcoming.append(entry)
+                    else:
+                        entry["urgency"] = "healthy"
+                        healthy.append(entry)
+                else:
+                    entry["urgency"] = "unknown"
+                    unknown.append(entry)
+            else:
+                entry["urgency"] = "unknown"
+                unknown.append(entry)
+        else:
+            entry["urgency"] = "unknown"
+            entry["error"] = "Could not retrieve registration data"
+            unknown.append(entry)
+
+    # Sort each category by days remaining (most urgent first)
+    for category in (critical, warning, upcoming, healthy):
+        category.sort(key=lambda e: e.get("days_remaining", 99999))
+
+    return json.dumps({
+        "source": source,
+        "total_checked": len(domain_list),
+        "summary": {
+            "critical": len(critical),
+            "warning": len(warning),
+            "upcoming": len(upcoming),
+            "healthy": len(healthy),
+            "unknown": len(unknown),
+        },
+        "critical": critical,
+        "warning": warning,
+        "upcoming": upcoming,
+        "healthy": healthy,
+        "unknown": unknown,
+    }, default=str)
+
+
+COMPOSITE_ADVISOR_TOOLS = [
+    security_audit,
+    brand_protection_scan,
+    dns_health_check,
+    domain_timeline,
+    expiration_alert,
 ]

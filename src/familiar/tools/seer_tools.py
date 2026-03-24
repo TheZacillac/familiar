@@ -124,6 +124,69 @@ def seer_bulk_propagation(domains: list[str], record_type: str = "A", concurrenc
         return json.dumps({"error": str(e)})
 
 
+@tool
+def seer_availability(domain: str) -> str:
+    """Check if a domain is available for registration. Returns availability status with confidence level and detection method."""
+    try:
+        return json.dumps(seer.availability(domain), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_subdomains(domain: str) -> str:
+    """Enumerate subdomains of a domain using Certificate Transparency logs. Returns discovered subdomains and count."""
+    try:
+        return json.dumps(seer.subdomains(domain), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_ssl(domain: str) -> str:
+    """Analyze SSL/TLS certificate for a domain. Returns certificate chain, validity, expiry, SANs, and protocol details."""
+    try:
+        return json.dumps(seer.ssl(domain), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_dnssec(domain: str) -> str:
+    """Check DNSSEC configuration for a domain. Returns DS/DNSKEY records, validation status, and any issues found."""
+    try:
+        return json.dumps(seer.dnssec(domain), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_dns_compare(domain: str, record_type: str, server_a: str, server_b: str) -> str:
+    """Compare DNS records for a domain between two nameservers. Shows matching records, differences, and records unique to each server."""
+    try:
+        return json.dumps(seer.dns_compare(domain, record_type, server_a, server_b), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_dns_follow(domain: str, record_type: str = "A", nameserver: Optional[str] = None, iterations: int = 3, interval_minutes: float = 1.0) -> str:
+    """Monitor DNS record changes over time. Queries the record repeatedly at the specified interval and reports changes between iterations."""
+    try:
+        return json.dumps(seer.dns_follow(domain, record_type, nameserver, iterations, interval_minutes), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_diff(domain_a: str, domain_b: str) -> str:
+    """Compare two domains side-by-side across registration, DNS, and SSL. Shows differences in registrar, nameservers, A records, and certificates."""
+    try:
+        return json.dumps(seer.diff(domain_a, domain_b), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 SEER_TOOLS = [
     seer_lookup,
     seer_whois,
@@ -133,6 +196,13 @@ SEER_TOOLS = [
     seer_dig,
     seer_propagation,
     seer_status,
+    seer_availability,
+    seer_subdomains,
+    seer_ssl,
+    seer_dnssec,
+    seer_dns_compare,
+    seer_dns_follow,
+    seer_diff,
     seer_bulk_lookup,
     seer_bulk_whois,
     seer_bulk_dig,

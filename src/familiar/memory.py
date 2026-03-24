@@ -95,6 +95,26 @@ class Memory:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def tag_search(self, tag: str) -> list[dict]:
+        """Search for domains matching a tag (case-insensitive)."""
+        tag = tag.strip()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM domain_notes WHERE tags LIKE ? ORDER BY last_seen DESC",
+                (f"%{tag}%",),
+            ).fetchall()
+            return [
+                {
+                    "domain": r["domain"],
+                    "notes": r["notes"],
+                    "tags": r["tags"],
+                    "first_seen": r["first_seen"],
+                    "last_updated": r["last_seen"],
+                }
+                for r in rows
+                if tag.lower() in r["tags"].lower()
+            ]
+
     def _get_domain_note_unlocked(self, domain: str) -> dict | None:
         """Internal helper — caller must hold self._lock."""
         row = self._conn.execute(

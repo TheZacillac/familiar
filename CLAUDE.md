@@ -16,11 +16,11 @@ familiar/
     ├── cli.py                # CLI entry point (REPL + single-query)
     ├── agent.py              # LangGraph Deep Agent builder
     └── tools/
-        ├── __init__.py       # Exports ALL_TOOLS (34 total: seer + tome + advisor + memory)
-        ├── seer_tools.py     # 13 Seer tools (LangChain @tool wrappers)
+        ├── __init__.py       # Exports ALL_TOOLS (50 total)
+        ├── seer_tools.py     # 20 Seer tools (LangChain @tool wrappers)
         ├── tome_tools.py     # 6 Tome tools (LangChain @tool wrappers)
-        ├── advisor_tools.py  # 6 Advisory tools (appraise, acquire, suggest, audit, competitive, migrate)
-        └── memory_tools.py   # 9 Memory tools (domain notebook, watchlist, explanation mode)
+        ├── advisor_tools.py  # 11 Advisory tools (6 strategic + 5 composite)
+        └── memory_tools.py   # 13 Memory + workflow tools
 ```
 
 ---
@@ -63,13 +63,13 @@ Catppuccin Mocha palette with Rich library:
 
 ---
 
-## Tools (34 total)
+## Tools (50 total)
 
 All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 
-### Seer Tools (13) — `seer_tools.py`
+### Seer Tools (20) — `seer_tools.py`
 
-**Single:** `seer_lookup`, `seer_whois`, `seer_rdap_domain`, `seer_rdap_ip`, `seer_rdap_asn`, `seer_dig`, `seer_propagation`, `seer_status`
+**Single:** `seer_lookup`, `seer_whois`, `seer_rdap_domain`, `seer_rdap_ip`, `seer_rdap_asn`, `seer_dig`, `seer_propagation`, `seer_status`, `seer_availability`, `seer_subdomains`, `seer_ssl`, `seer_dnssec`, `seer_dns_compare`, `seer_dns_follow`, `seer_diff`
 
 **Bulk (max 100 domains):** `seer_bulk_lookup`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`
 
@@ -77,9 +77,13 @@ All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 
 `tome_tld_lookup`, `tome_tld_search`, `tome_record_lookup`, `tome_record_search`, `tome_glossary_lookup`, `tome_glossary_search`
 
-### Advisor Tools (6) — `advisor_tools.py`
+### Strategic Advisor Tools (6) — `advisor_tools.py`
 
 `appraise_domain`, `plan_acquisition`, `suggest_domains`, `audit_portfolio`, `competitive_intel`, `migration_preflight`
+
+### Composite Advisor Tools (5) — `advisor_tools.py`
+
+`security_audit`, `brand_protection_scan`, `dns_health_check`, `domain_timeline`, `expiration_alert`
 
 ### Memory Tools (9) — `memory_tools.py`
 
@@ -88,6 +92,10 @@ All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 **Watchlist:** `watchlist_add`, `watchlist_remove`, `watchlist_list`, `watchlist_check`
 
 **Preferences:** `set_explanation_mode`, `get_explanation_mode`
+
+### Workflow Tools (4) — `memory_tools.py`
+
+`tag_search`, `create_report`, `compare_domains`, `session_summary`
 
 ---
 
