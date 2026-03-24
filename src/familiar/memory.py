@@ -96,13 +96,16 @@ class Memory:
             return [dict(r) for r in rows]
 
     def tag_search(self, tag: str) -> list[dict]:
-        """Search for domains matching a tag (case-insensitive)."""
-        tag = tag.strip()
+        """Search for domains matching a tag (exact, case-insensitive)."""
+        tag = tag.strip().lower()
+        # Escape LIKE wildcards to prevent unintended pattern matching
+        escaped_tag = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM domain_notes WHERE tags LIKE ? ORDER BY last_seen DESC",
-                (f"%{tag}%",),
+                "SELECT * FROM domain_notes WHERE tags LIKE ? ESCAPE '\\' ORDER BY last_seen DESC",
+                (f"%{escaped_tag}%",),
             ).fetchall()
+            # Filter to exact tag matches (SQL LIKE is a coarse pre-filter)
             return [
                 {
                     "domain": r["domain"],
@@ -112,7 +115,7 @@ class Memory:
                     "last_updated": r["last_seen"],
                 }
                 for r in rows
-                if tag.lower() in r["tags"].lower()
+                if tag in [t.strip().lower() for t in r["tags"].split(",")]
             ]
 
     def _get_domain_note_unlocked(self, domain: str) -> dict | None:

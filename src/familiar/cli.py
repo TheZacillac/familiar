@@ -313,10 +313,12 @@ def main():
 def _run_once(agent, query: str):
     """Run a single query and print the response."""
     config = {"configurable": {"thread_id": uuid.uuid4().hex}}
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    content = f"[Current date/time: {now}]\n\n{query}"
     try:
         with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
             result = agent.invoke(
-                {"messages": [{"role": "user", "content": query}]}, config
+                {"messages": [{"role": "user", "content": content}]}, config
             )
     except Exception as e:
         console.print(f"[error]Error: {e}[/error]")

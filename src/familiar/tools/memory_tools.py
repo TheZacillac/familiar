@@ -58,7 +58,7 @@ def recall_all_domains() -> str:
 @tool
 def watchlist_add(domain: str) -> str:
     """Add a domain to the watchlist for ongoing monitoring. Watched domains are checked
-    for expiration, SSL issues, and DNS changes when the user runs /check."""
+    for expiration, SSL issues, and HTTP accessibility when the user runs /check."""
     result = get_memory().watchlist_add(domain)
     return json.dumps(result, default=str)
 
@@ -90,16 +90,31 @@ def watchlist_check() -> str:
     domains = [w["domain"] for w in watched]
     alerts = []
 
-    bulk_status = safe_call(seer.bulk_status, domains) or [None] * len(domains)
-    bulk_lookup = safe_call(seer.bulk_lookup, domains) or [None] * len(domains)
+    bulk_status_raw = safe_call(seer.bulk_status, domains) or [None] * len(domains)
+    bulk_lookup_raw = safe_call(seer.bulk_lookup, domains) or [None] * len(domains)
 
     for i, domain in enumerate(domains):
         domain_alerts = []
 
-        # Expiration check
-        reg = bulk_lookup[i] if i < len(bulk_lookup) else None
+        # Unwrap BulkResult → .data for lookup
+        raw_reg = bulk_lookup_raw[i] if i < len(bulk_lookup_raw) else None
+        reg = None
+        if raw_reg and isinstance(raw_reg, dict) and raw_reg.get("success"):
+            reg = raw_reg.get("data")
+
+        # Unwrap BulkResult → .data for status
+        raw_st = bulk_status_raw[i] if i < len(bulk_status_raw) else None
+        st = None
+        if raw_st and isinstance(raw_st, dict) and raw_st.get("success"):
+            st = raw_st.get("data")
+
+        # Expiration check — field is nested under data for whois source
         if reg and isinstance(reg, dict):
-            expiry = reg.get("expiry") or reg.get("expiration_date")
+            inner = reg.get("data", reg)
+            expiry = (
+                inner.get("expiration_date") or inner.get("expiry")
+                if isinstance(inner, dict) else None
+            )
             if expiry:
                 days_left = _days_until(expiry)
                 if days_left is not None:
@@ -116,24 +131,30 @@ def watchlist_check() -> str:
                             "message": f"Expires in {days_left} days ({expiry})",
                         })
 
-        # SSL check
-        st = bulk_status[i] if i < len(bulk_status) else None
+        # SSL check — certificate info is nested under .certificate
         if st and isinstance(st, dict):
-            if not st.get("ssl_valid", False):
-                domain_alerts.append({
-                    "type": "ssl",
-                    "severity": "critical",
-                    "message": "SSL certificate is invalid or missing",
-                })
-            ssl_expiry = st.get("ssl_expiry")
-            if ssl_expiry:
-                ssl_days = _days_until(ssl_expiry)
+            cert = st.get("certificate")
+            if cert and isinstance(cert, dict):
+                if not cert.get("is_valid", True):
+                    domain_alerts.append({
+                        "type": "ssl",
+                        "severity": "critical",
+                        "message": "SSL certificate is invalid or missing",
+                    })
+                ssl_days = cert.get("days_until_expiry")
                 if ssl_days is not None and ssl_days < 14:
                     domain_alerts.append({
                         "type": "ssl_expiry",
                         "severity": "warning",
                         "message": f"SSL certificate expires in {ssl_days} days",
                     })
+            elif cert is None:
+                # No certificate at all
+                domain_alerts.append({
+                    "type": "ssl",
+                    "severity": "warning",
+                    "message": "No SSL certificate detected",
+                })
 
             if st.get("http_status") is None:
                 domain_alerts.append({
@@ -199,9 +220,9 @@ MEMORY_TOOLS = [
 
 @tool
 def tag_search(tag: str) -> str:
-    """Search remembered domains by tag. Returns all domains whose tags contain
-    the given tag (case-insensitive). Useful for finding domains grouped by
-    purpose, project, or category."""
+    """Search remembered domains by exact tag match (case-insensitive). Returns all
+    domains that have the given tag. Useful for finding domains grouped by purpose,
+    project, or category."""
     try:
         results = get_memory().tag_search(tag)
         return json.dumps({"tag": tag, "total": len(results), "domains": results}, default=str)
@@ -282,9 +303,8 @@ def compare_domains(domain_a: str, domain_b: str) -> str:
 
 @tool
 def session_summary() -> str:
-    """Summarize what domains were investigated this session. Lists all remembered
-    domains sorted by most recently discussed, with their tags, plus any watchlist
-    items currently being monitored."""
+    """List all domains in Familiar's notebook, most recently discussed first, with
+    their tags, plus any watchlist items currently being monitored."""
     try:
         mem = get_memory()
         domains = mem.recall_all_domains()

@@ -12,8 +12,8 @@ from ..utils import days_until as _days_until, safe_call
 # Known multi-level TLD suffixes for correct SLD extraction
 _MULTI_LEVEL_TLDS = frozenset({
     "co.uk", "org.uk", "me.uk", "ac.uk",
-    "com.au", "net.au", "org.au",
-    "co.nz", "net.nz", "org.nz",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.nz", "net.nz", "org.nz", "ac.nz", "govt.nz",
     "co.jp", "ne.jp", "or.jp",
     "co.kr", "or.kr",
     "co.in", "net.in", "org.in",
@@ -26,7 +26,75 @@ _MULTI_LEVEL_TLDS = frozenset({
     "com.sg",
     "com.hk",
     "co.th",
+    "com.ar",
+    "co.id", "or.id",
+    "com.co", "net.co",
+    "com.tr", "org.tr",
+    "com.ph",
+    "com.my",
+    "com.ng",
+    "co.ke",
 })
+
+
+# --- EPP Status Code Classification (RFC 5731) ---
+
+_EPP_TRANSFER_LOCKS = frozenset({
+    "clienttransferprohibited",
+    "servertransferprohibited",
+})
+
+_EPP_ALL_LOCKS = frozenset({
+    "clienttransferprohibited",
+    "servertransferprohibited",
+    "clientdeleteprohibited",
+    "serverdeleteprohibited",
+    "clientupdateprohibited",
+    "serverupdateprohibited",
+    "clientrenewprohibited",
+    "serverrenewprohibited",
+})
+
+_EPP_HOLDS = frozenset({
+    "clienthold",
+    "serverhold",
+})
+
+
+def _normalize_epp_status(status: str) -> str:
+    """Normalize an EPP status string to its canonical lowercase form.
+
+    Handles formats like:
+    - 'clientTransferProhibited' (standard)
+    - 'clientTransferProhibited https://icann.org/epp#clientTransferProhibited' (with URL)
+    - 'https://icann.org/epp#clientTransferProhibited' (URL-only)
+    """
+    s = status.strip()
+    # Extract from URL fragment (e.g., https://icann.org/epp#clientTransferProhibited)
+    if "#" in s:
+        s = s.rsplit("#", 1)[-1]
+    # Take first token to strip trailing URLs
+    s = s.split()[0]
+    return s.lower()
+
+
+def _classify_epp_statuses(raw_statuses: list) -> dict:
+    """Classify raw EPP status strings into structured categories."""
+    normalized = [_normalize_epp_status(s) for s in raw_statuses]
+
+    transfer_locks = [s for s in normalized if s in _EPP_TRANSFER_LOCKS]
+    all_locks = [s for s in normalized if s in _EPP_ALL_LOCKS]
+    holds = [s for s in normalized if s in _EPP_HOLDS]
+
+    return {
+        "raw": raw_statuses,
+        "normalized": normalized,
+        "transfer_locks": transfer_locks,
+        "all_locks": all_locks,
+        "holds": holds,
+        "is_transfer_locked": bool(transfer_locks),
+        "is_held": bool(holds),
+    }
 
 
 def _split_domain(domain: str) -> tuple[str, str]:
@@ -72,6 +140,8 @@ def _domain_name_analysis(domain: str) -> dict:
         analysis["tld_tier"] = "premium"
     elif tld in {"net", "org"}:
         analysis["tld_tier"] = "established"
+    elif tld in {"edu", "gov", "mil", "int"}:
+        analysis["tld_tier"] = "restricted"
     elif tld in {"io", "co", "ai", "dev", "app", "tech"}:
         analysis["tld_tier"] = "tech-premium"
     elif tld in _MULTI_LEVEL_TLDS or len(tld) == 2:
@@ -115,11 +185,30 @@ def appraise_domain(domain: str) -> str:
     if whois_data and isinstance(whois_data, dict):
         created = whois_data.get("created") or whois_data.get("creation_date")
         if created:
-            signals["registration_date"] = str(created)
+            signals["registration_date"] = str(created)[:10]
             age_days = _days_until(created)
             if age_days is not None:
                 # age_days is negative because the date is in the past
                 signals["age_years"] = round(-age_days / 365.25, 1)
+
+        expiry = whois_data.get("expiry") or whois_data.get("expiration_date")
+        if expiry:
+            signals["expiration_date"] = str(expiry)[:10]
+            expiry_days = _days_until(expiry)
+            if expiry_days is not None:
+                signals["years_until_expiry"] = round(expiry_days / 365.25, 1)
+
+        updated = whois_data.get("updated") or whois_data.get("last_updated")
+        if updated:
+            signals["last_updated"] = str(updated)[:10]
+
+        # Registration span is NOT the same as renewal term — WHOIS only shows
+        # the current expiry, not how many times the domain has been renewed.
+        signals["_note"] = (
+            "age_years and years_until_expiry are computed from registration and "
+            "expiry dates. Do not infer renewal history — WHOIS does not record "
+            "individual renewal events."
+        )
 
     record_count = sum(
         len(v) if isinstance(v, list) else 1
@@ -165,7 +254,8 @@ def plan_acquisition(domain: str) -> str:
     acquisition_intel = {
         "is_registered": False,
         "registrar": None,
-        "lock_status": [],
+        "epp_statuses": [],
+        "epp_classification": {},
         "expiry_date": None,
         "parking_indicators": [],
         "active_use_indicators": [],
@@ -177,7 +267,8 @@ def plan_acquisition(domain: str) -> str:
         statuses = whois_data.get("status") or whois_data.get("statuses") or []
         if isinstance(statuses, str):
             statuses = [statuses]
-        acquisition_intel["lock_status"] = statuses
+        acquisition_intel["epp_statuses"] = statuses
+        acquisition_intel["epp_classification"] = _classify_epp_statuses(statuses)
         acquisition_intel["expiry_date"] = str(
             whois_data.get("expiry") or whois_data.get("expiration_date") or ""
         )
@@ -198,30 +289,142 @@ def plan_acquisition(domain: str) -> str:
     if status_data and isinstance(status_data, dict) and status_data.get("ssl_valid"):
         acquisition_intel["active_use_indicators"].append("has_valid_ssl")
 
+    # Deterministic acquisition difficulty score
+    difficulty = _compute_acquisition_difficulty(
+        acquisition_intel, name_analysis,
+    )
+
     return json.dumps({
         "domain": domain,
         "name_analysis": name_analysis,
         "acquisition_intel": acquisition_intel,
+        "acquisition_difficulty": difficulty,
         "registration": whois_data,
         "web_status": status_data,
         "nameservers": dns_ns,
     }, default=str)
 
 
+def _compute_acquisition_difficulty(acquisition_intel: dict, name_analysis: dict) -> dict:
+    """Compute a deterministic acquisition difficulty assessment (0-10 scale)."""
+    if not acquisition_intel["is_registered"]:
+        return {"score": 0, "rating": "available", "factors": ["Domain is not registered"]}
+
+    score = 0
+    factors = []
+
+    # EPP lock-based difficulty
+    epp = acquisition_intel.get("epp_classification", {})
+    if epp.get("is_transfer_locked"):
+        score += 2
+        factors.append("Transfer lock active")
+    if epp.get("is_held"):
+        score += 3
+        factors.append("Domain is on hold (registry or registrar action)")
+    lock_count = len(epp.get("all_locks", []))
+    if lock_count > 2:
+        score += 1
+        factors.append(f"{lock_count} lock statuses present")
+
+    # Active use signals
+    indicators = acquisition_intel.get("active_use_indicators", [])
+    if "has_email" in indicators:
+        score += 2
+        factors.append("Active email infrastructure")
+    if "has_valid_ssl" in indicators:
+        score += 1
+        factors.append("Valid SSL certificate (active maintenance)")
+    if "has_a_record" in indicators and "has_email" not in indicators:
+        score += 1
+        factors.append("Has A record (resolves)")
+
+    # Name quality — premium names are harder to acquire
+    length_tier = name_analysis.get("length_tier", "")
+    if length_tier == "ultra-premium":
+        score += 2
+        factors.append("Ultra-premium name length (1-3 chars)")
+    elif length_tier == "premium":
+        score += 1
+        factors.append("Premium name length (4-5 chars)")
+
+    tld_tier = name_analysis.get("tld_tier", "")
+    if tld_tier == "premium":
+        score += 1
+        factors.append(".com TLD (highest demand)")
+
+    # Parking indicators suggest easier acquisition
+    parking = acquisition_intel.get("parking_indicators", [])
+    if parking:
+        score -= 1
+        factors.append(f"Parking signals: {', '.join(parking)}")
+
+    score = max(0, min(10, score))
+
+    if score <= 2:
+        rating = "low"
+    elif score <= 4:
+        rating = "moderate"
+    elif score <= 6:
+        rating = "high"
+    else:
+        rating = "very-high"
+
+    return {"score": score, "rating": rating, "factors": factors}
+
+
+_NOT_FOUND_PATTERNS = (
+    "no match",
+    "not found",
+    "no entries found",
+    "no data found",
+    "domain not found",
+    "no information available",
+    "is free",
+    "status: free",
+    "no object found",
+    "nothing found",
+    "no results",
+)
+
+_TRANSIENT_ERROR_PATTERNS = (
+    "rate limit",
+    "timeout",
+    "timed out",
+    "connection",
+    "refused",
+    "too many",
+    "server error",
+    "503",
+    "429",
+    "network",
+    "unavailable",
+)
+
+
 def _is_registered(result) -> bool | None:
     """Determine if a lookup result indicates a registered domain.
 
-    Returns True if registered, False if clearly available (error response),
-    None if the lookup itself failed (result is None).
+    Returns True if registered, False if clearly available (not-found error),
+    None if the lookup failed or the result is ambiguous (transient errors,
+    rate limiting, timeouts, etc.).
     """
     if result is None:
         return None
     if not isinstance(result, dict):
         return None
-    if result.get("error"):
+    error = result.get("error")
+    if not error:
+        # Clean non-error response means registered
+        return True
+    error_lower = str(error).lower()
+    # Transient errors are ambiguous — don't assume available
+    if any(p in error_lower for p in _TRANSIENT_ERROR_PATTERNS):
+        return None
+    # "Not found" patterns mean the domain is genuinely available
+    if any(p in error_lower for p in _NOT_FOUND_PATTERNS):
         return False
-    # Conservative: any clean non-error response means registered
-    return True
+    # Unknown error type — treat as ambiguous rather than available
+    return None
 
 
 @tool
@@ -344,15 +547,20 @@ def audit_portfolio(domains: str) -> str:
                 days_left = _days_until(expiry)
                 if days_left is not None:
                     entry["days_until_expiry"] = days_left
-                    if days_left < 30:
-                        entry["issues"].append("CRITICAL: expires within 30 days")
+                    if days_left < 7:
+                        entry["issues"].append("CRITICAL: expires within 7 days")
                         expiry_warnings.append(
                             {"domain": domain, "days": days_left, "severity": "critical"}
                         )
-                    elif days_left < 90:
-                        entry["issues"].append("WARNING: expires within 90 days")
+                    elif days_left < 30:
+                        entry["issues"].append("WARNING: expires within 30 days")
                         expiry_warnings.append(
                             {"domain": domain, "days": days_left, "severity": "warning"}
+                        )
+                    elif days_left < 90:
+                        entry["issues"].append("NOTICE: expires within 90 days")
+                        expiry_warnings.append(
+                            {"domain": domain, "days": days_left, "severity": "upcoming"}
                         )
 
             dnssec = reg.get("dnssec")
@@ -508,16 +716,25 @@ def migration_preflight(domain: str, target_nameservers: str = "") -> str:
         statuses = whois_data.get("status") or whois_data.get("statuses") or []
         if isinstance(statuses, str):
             statuses = [statuses]
-        locked = any("lock" in s.lower() for s in statuses)
+        epp = _classify_epp_statuses(statuses)
+        transfer_locked = epp["is_transfer_locked"]
+
+        lock_detail = "Domain is not transfer-locked"
+        if transfer_locked:
+            locks = ", ".join(epp["transfer_locks"])
+            lock_detail = f"Transfer lock active ({locks}) — remove before transferring"
 
         checklist.append({
             "step": "Domain lock",
-            "status": "action_required" if locked else "ready",
-            "detail": (
-                "Domain has transfer lock — remove before transferring"
-                if locked else "Domain is not locked"
-            ),
+            "status": "action_required" if transfer_locked else "ready",
+            "detail": lock_detail,
         })
+
+        if epp["is_held"]:
+            holds = ", ".join(epp["holds"])
+            migration_warnings.append(
+                f"Domain is on hold ({holds}) — resolve with registrar/registry before transfer"
+            )
 
         registrar = whois_data.get("registrar", "unknown")
         checklist.append({
@@ -534,9 +751,10 @@ def migration_preflight(domain: str, target_nameservers: str = "") -> str:
                     migration_warnings.append(
                         f"Domain expires in {days_left} days — renew before transferring"
                     )
-                if days_left < 60:
+                elif days_left < 60:
                     migration_warnings.append(
-                        "ICANN prohibits transfers within 60 days of expiry for some TLDs"
+                        f"Domain expires in {days_left} days — consider renewing first "
+                        "to avoid expiration during the transfer process"
                     )
 
     # TTL recommendation
@@ -755,8 +973,10 @@ def security_audit(domain: str) -> str:
         recommendations.append("Configure HTTP to HTTPS redirect for all traffic")
         risk_score += 1
 
-    if not http_security.get("ssl_valid"):
-        risk_score += 2
+    # Only penalize SSL via http_security if we actually got status data back
+    # (ssl_health already penalizes for missing/invalid SSL independently)
+    if status_data is not None and not http_security.get("ssl_valid"):
+        risk_score += 1
 
     # Determine overall risk rating
     if risk_score >= 5:
@@ -803,27 +1023,43 @@ def brand_protection_scan(brand: str, primary_domain: str) -> str:
     for i in range(len(brand)):
         variants.add(brand[:i] + brand[i] * 2 + brand[i + 1:])
 
-    # Common character substitutions
+    # Common character substitutions (single-char homoglyphs)
     _substitutions = {
-        "o": "0", "0": "o",
-        "l": "1", "1": "l",
-        "i": "1",
-        "s": "5", "5": "s",
-        "a": "4",
-        "e": "3",
+        "o": ["0"],
+        "0": ["o"],
+        "l": ["1", "i"],
+        "1": ["l", "i"],
+        "i": ["1", "l"],
+        "s": ["5"],
+        "5": ["s"],
+        "a": ["4"],
+        "e": ["3"],
     }
     for i, char in enumerate(brand):
         if char in _substitutions:
-            variants.add(brand[:i] + _substitutions[char] + brand[i + 1:])
+            for sub in _substitutions[char]:
+                variants.add(brand[:i] + sub + brand[i + 1:])
+
+    # Multi-character homoglyph substitutions (rn→m, vv→w, cl→d)
+    _multi_subs = {
+        "rn": "m", "m": "rn",
+        "vv": "w", "w": "vv",
+        "cl": "d", "d": "cl",
+    }
+    for pattern, replacement in _multi_subs.items():
+        if pattern in brand:
+            variants.add(brand.replace(pattern, replacement, 1))
 
     # Remove the original brand from variants
     variants.discard(brand)
 
     # Cap typo variants for network checks
-    typo_variants = list(variants)[:20]
+    typo_variants = list(variants)[:30]
 
-    # Build domains to check: typo variants on .com
-    typo_domains = [f"{v}.com" for v in typo_variants]
+    # Check typo variants across key TLDs (not just .com)
+    typo_tlds = ["com", "net", "org", "co"]
+    typo_domains = [f"{v}.{tld}" for v in typo_variants for tld in typo_tlds]
+    typo_domains = typo_domains[:100]  # Cap for bulk availability
 
     # Check TLD variants of the actual brand
     key_tlds = ["com", "net", "org", "io", "co"]
@@ -948,60 +1184,63 @@ def dns_health_check(domain: str) -> str:
             else:
                 soa_info["format"] = "numeric"
 
-    # Recommendations
+    # Weighted health scoring — critical records are worth more
     recommendations = []
-    best_practices_met = 0
-    total_practices = 7
+    score = 0
+    max_score = 0
 
-    # 1. Has A record
+    # Critical records (weight 3)
+    max_score += 3
     if "A" in records_found:
-        best_practices_met += 1
+        score += 3
     else:
         recommendations.append("No A record found — domain will not resolve to an IPv4 address")
 
-    # 2. Has AAAA record (IPv6)
-    if "AAAA" in records_found:
-        best_practices_met += 1
-    else:
-        recommendations.append("No AAAA record — consider adding IPv6 support")
-
-    # 3. Has NS records (at least 2)
-    if ns_records and isinstance(ns_records, list) and len(ns_records) >= 2:
-        best_practices_met += 1
-    else:
-        recommendations.append("Ensure at least 2 nameservers for redundancy")
-
-    # 4. Has SOA record
+    max_score += 3
     if "SOA" in records_found:
-        best_practices_met += 1
+        score += 3
     else:
         recommendations.append("Missing SOA record — critical for zone authority")
 
-    # 5. Has SPF
-    if spf_found:
-        best_practices_met += 1
+    max_score += 3
+    if ns_records and isinstance(ns_records, list) and len(ns_records) >= 2:
+        score += 3
     else:
-        if "MX" in records_found:
-            recommendations.append("Has MX records but no SPF — add SPF to prevent email spoofing")
+        recommendations.append("Ensure at least 2 nameservers for redundancy")
+
+    # Important records (weight 2)
+    # SPF only relevant when MX exists
+    has_mx = "MX" in records_found
+    if has_mx:
+        max_score += 2
+        if spf_found:
+            score += 2
         else:
-            recommendations.append("No SPF record found")
+            recommendations.append("Has MX records but no SPF — add SPF to prevent email spoofing")
 
-    # 6. Has CAA record
+    max_score += 2
     if "CAA" in records_found:
-        best_practices_met += 1
+        score += 2
     else:
-        recommendations.append("No CAA record — add to restrict which CAs can issue certificates")
+        recommendations.append("No CAA record — consider adding to restrict certificate issuance")
 
-    # 7. Has MX
-    if "MX" in records_found:
-        best_practices_met += 1
+    # Optional records (weight 1)
+    max_score += 1
+    if "AAAA" in records_found:
+        score += 1
+    else:
+        recommendations.append("No AAAA record — consider adding IPv6 support")
 
-    health_score = round((best_practices_met / total_practices) * 100)
+    max_score += 1
+    if has_mx:
+        score += 1
+
+    health_score = round((score / max_score) * 100) if max_score > 0 else 0
 
     return json.dumps({
         "domain": domain,
         "health_score": health_score,
-        "best_practices_met": f"{best_practices_met}/{total_practices}",
+        "score_detail": f"{score}/{max_score} (weighted)",
         "records_found": records_found,
         "records_missing": records_missing,
         "propagation_status": propagation_status,

@@ -81,7 +81,7 @@ def seer_status(domain: str) -> str:
 
 @tool
 def seer_bulk_lookup(domains: list[str], concurrency: int = 10) -> str:
-    """Smart lookup for multiple domains at once (RDAP first, WHOIS fallback). Max 100 domains."""
+    """Smart lookup for multiple domains at once (RDAP first, WHOIS fallback). Recommended max 100 domains for performance."""
     try:
         return json.dumps(seer.bulk_lookup(domains, concurrency), default=str)
     except Exception as e:
@@ -90,7 +90,7 @@ def seer_bulk_lookup(domains: list[str], concurrency: int = 10) -> str:
 
 @tool
 def seer_bulk_whois(domains: list[str], concurrency: int = 10) -> str:
-    """WHOIS lookup for multiple domains at once. Max 100 domains."""
+    """WHOIS lookup for multiple domains at once. Recommended max 100 domains for performance."""
     try:
         return json.dumps(seer.bulk_whois(domains, concurrency), default=str)
     except Exception as e:
@@ -99,7 +99,7 @@ def seer_bulk_whois(domains: list[str], concurrency: int = 10) -> str:
 
 @tool
 def seer_bulk_dig(domains: list[str], record_type: str = "A", concurrency: int = 10) -> str:
-    """Query DNS records for multiple domains at once. Max 100 domains."""
+    """Query DNS records for multiple domains at once. Recommended max 100 domains for performance."""
     try:
         return json.dumps(seer.bulk_dig(domains, record_type, concurrency), default=str)
     except Exception as e:
@@ -108,7 +108,7 @@ def seer_bulk_dig(domains: list[str], record_type: str = "A", concurrency: int =
 
 @tool
 def seer_bulk_status(domains: list[str], concurrency: int = 10) -> str:
-    """Check health status for multiple domains at once. Max 100 domains."""
+    """Check health status for multiple domains at once. Recommended max 100 domains for performance."""
     try:
         return json.dumps(seer.bulk_status(domains, concurrency), default=str)
     except Exception as e:
@@ -117,7 +117,7 @@ def seer_bulk_status(domains: list[str], concurrency: int = 10) -> str:
 
 @tool
 def seer_bulk_propagation(domains: list[str], record_type: str = "A", concurrency: int = 5) -> str:
-    """Check DNS propagation for multiple domains across global DNS servers. Max 100 domains."""
+    """Check DNS propagation for multiple domains across global DNS servers. Recommended max 100 domains for performance."""
     try:
         return json.dumps(seer.bulk_propagation(domains, record_type, concurrency), default=str)
     except Exception as e:

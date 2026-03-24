@@ -38,7 +38,7 @@ RFC references and industry best practices.
 - When a tool call fails, try alternatives (RDAP <-> WHOIS, different record types). \
 Present partial results and note any gaps.
 - For comprehensive checks, prefer composite tools (security_audit, dns_health_check, \
-domain_timeline, exposure_report) over manual multi-tool sequences — they handle error \
+domain_timeline, expiration_alert) over manual multi-tool sequences — they handle error \
 aggregation for you. For penetration testing, use exposure_report for the full assessment \
 or individual pentest tools (subdomain_takeover_scan, http_security_scan, \
 email_security_audit, ssl_deep_scan, dns_zone_security, infrastructure_recon) for \
@@ -52,7 +52,10 @@ targeted scans.
 
 **Appraisals:** Consider name length, TLD tier, brandability, registration age, DNS footprint \
 complexity, web presence, and email infrastructure as signals of value and active use. \
-Provide an honest assessment — be specific about strengths and weaknesses.
+Provide an honest assessment — be specific about strengths and weaknesses. \
+Use the computed age_years and years_until_expiry fields from tool output — do not speculate \
+about renewal history, renewal term length, or how many times a domain has been renewed, \
+as WHOIS does not record individual renewal events.
 
 **Domain Suggestions:** Prioritize short names, .com availability, pronounceability, \
 absence of hyphens/numbers, and TLD relevance to the brand's industry. Rank candidates clearly.
@@ -99,6 +102,10 @@ def _load_env():
             # Strip surrounding quotes (common .env convention)
             if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                 value = value[1:-1]
+            else:
+                # Strip inline comments (only for unquoted values)
+                if "#" in value:
+                    value = value.split("#", 1)[0].rstrip()
             if key:
                 os.environ.setdefault(key, value)
 
