@@ -93,6 +93,27 @@ SLASH_COMMANDS = {
         "Show all domains in your notebook. Use recall_all_domains. Format as a clear list "
         "with notes and tags."
     ),
+    "/pentest": (
+        "Run a full penetration test-style exposure report on {args}. Use exposure_report "
+        "to scan for subdomain takeover, HTTP security, email authentication, SSL/TLS, "
+        "DNS zone security, and infrastructure reconnaissance. Present all findings "
+        "organized by severity with remediation steps."
+    ),
+    "/takeover": (
+        "Scan {args} for subdomain takeover vulnerabilities. Use subdomain_takeover_scan "
+        "to enumerate subdomains via CT logs and check for dangling CNAME records pointing "
+        "to claimable services. Flag all vulnerable subdomains with severity ratings."
+    ),
+    "/headers": (
+        "Run an HTTP security scan on {args}. Use http_security_scan to check HTTPS "
+        "enforcement, SSL certificate health, CAA records, and generate a security "
+        "header checklist. Grade the domain's HTTP security posture."
+    ),
+    "/recon": (
+        "Run infrastructure reconnaissance on {args}. Use infrastructure_recon to identify "
+        "CDN/WAF providers, hosting platforms, email infrastructure, DNS providers, and "
+        "technology signals. Map the full external footprint."
+    ),
 }
 
 # Track the last agent response for /export

@@ -21,6 +21,10 @@ subdomain enumeration, and certificate analysis tools. Compare DNS across namese
 monitor record changes over time.
 **Security:** Run comprehensive security audits covering SSL, DNSSEC, email auth (SPF/DMARC), \
 and HTTP configuration. Scan for brand protection issues and typosquatting threats.
+**Penetration Testing:** Perform vulnerability scanning with subdomain takeover detection, \
+HTTP security posture assessment, deep email authentication auditing, SSL/TLS certificate \
+analysis, DNS zone security testing, and infrastructure reconnaissance. Generate unified \
+exposure reports aggregating all findings with severity ratings.
 **Advisory:** Appraise domain values, plan acquisitions, suggest domains for brands, \
 audit portfolios, analyze competitors' domain footprints, and guide DNS migrations.
 **Memory:** Remember domains users care about, maintain a watchlist for ongoing monitoring, \
@@ -34,7 +38,11 @@ RFC references and industry best practices.
 - When a tool call fails, try alternatives (RDAP <-> WHOIS, different record types). \
 Present partial results and note any gaps.
 - For comprehensive checks, prefer composite tools (security_audit, dns_health_check, \
-domain_timeline) over manual multi-tool sequences — they handle error aggregation for you.
+domain_timeline, exposure_report) over manual multi-tool sequences — they handle error \
+aggregation for you. For penetration testing, use exposure_report for the full assessment \
+or individual pentest tools (subdomain_takeover_scan, http_security_scan, \
+email_security_audit, ssl_deep_scan, dns_zone_security, infrastructure_recon) for \
+targeted scans.
 - Proactively use remember_domain when a user investigates or discusses a domain they care about.
 - Check recall_domain when a user mentions a domain you may have previously noted.
 - Check get_explanation_mode at the start of substantive responses to calibrate detail level.
@@ -59,12 +67,19 @@ CDN usage, and defensive registration patterns. Identify gaps and opportunities.
 **Migration Planning:** Walk through every step methodically. Flag blockers (locks, pending \
 transfers, short expiry). Emphasize email continuity and TTL management.
 
+**Penetration Testing:** Use exposure_report for a full pentest-style assessment. Present \
+findings organized by severity (CRITICAL → HIGH → MEDIUM → LOW → INFO) with specific \
+remediation steps. For targeted scans, use individual tools: subdomain_takeover_scan for \
+dangling CNAMEs, email_security_audit for SPF/DMARC/DKIM deep-dive, ssl_deep_scan for \
+certificate analysis, dns_zone_security for zone hardening, infrastructure_recon for \
+technology mapping.
+
 ## Slash Commands
 
 Users may type these in the REPL — respond as if they asked the full question:
 /assess, /compare, /secure, /suggest, /acquire, /portfolio, /competitive, /migrate, \
 /watch, /unwatch, /watchlist, /check, /domains, /security, /brand, /dns, /timeline, \
-/expiry, /report, /tags, /summary
+/expiry, /report, /tags, /summary, /pentest, /takeover, /headers, /recon
 """
 
 
