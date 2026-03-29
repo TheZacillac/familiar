@@ -457,8 +457,155 @@ def mta_sts_check(domain: str) -> str:
     }, default=str)
 
 
+# DANE TLSA usage field descriptions
+_TLSA_USAGE = {
+    0: "CA constraint (PKIX-TA) — certificate must chain to specified CA",
+    1: "Service certificate constraint (PKIX-EE) — must match leaf cert + pass PKIX validation",
+    2: "Trust anchor assertion (DANE-TA) — specified cert is trust anchor (no PKIX required)",
+    3: "Domain-issued certificate (DANE-EE) — must match leaf cert exactly (no PKIX required)",
+}
+
+_TLSA_SELECTOR = {
+    0: "Full certificate",
+    1: "SubjectPublicKeyInfo (public key only)",
+}
+
+_TLSA_MATCHING = {
+    0: "Exact match (no hash)",
+    1: "SHA-256 hash",
+    2: "SHA-512 hash",
+}
+
+
+@tool
+def dane_tlsa_check(domain: str, port: int = 443) -> str:
+    """Check DANE TLSA records (RFC 6698/7671) for a domain and port. DANE binds
+    TLS certificates to DNS via DNSSEC, preventing CA compromise attacks. Checks
+    _<port>._tcp.<domain> for TLSA records and validates against the actual
+    certificate. Common ports: 443 (HTTPS), 25 (SMTP), 587 (submission)."""
+    domain = domain.lower().strip()
+    port = int(port)
+
+    tlsa_name = f"_{port}._tcp.{domain}"
+
+    # Fetch TLSA records, DNSSEC status, and the actual certificate concurrently
+    tlsa_records, dnssec_data, ssl_data = parallel_calls(
+        (seer.dig, tlsa_name, "TLSA"),
+        (seer.dnssec, domain),
+        (seer.ssl, domain),
+    )
+
+    findings = []
+
+    # --- Parse TLSA records ---
+    parsed_tlsa = []
+    if tlsa_records and isinstance(tlsa_records, list):
+        for rec in tlsa_records:
+            if isinstance(rec, dict):
+                data = rec.get("data", rec)
+                if isinstance(data, dict):
+                    usage = data.get("usage", data.get("certificate_usage"))
+                    selector = data.get("selector")
+                    matching = data.get("matching_type")
+                    cert_data = data.get("certificate_data", data.get("certificate_association_data", ""))
+
+                    entry = {
+                        "usage": usage,
+                        "usage_description": _TLSA_USAGE.get(usage, f"Unknown ({usage})"),
+                        "selector": selector,
+                        "selector_description": _TLSA_SELECTOR.get(selector, f"Unknown ({selector})"),
+                        "matching_type": matching,
+                        "matching_description": _TLSA_MATCHING.get(matching, f"Unknown ({matching})"),
+                        "certificate_data": str(cert_data)[:64] + ("..." if len(str(cert_data)) > 64 else ""),
+                    }
+                    parsed_tlsa.append(entry)
+
+                    if usage in (0, 1):
+                        findings.append({
+                            "severity": "INFO",
+                            "finding": f"TLSA usage {usage} (PKIX-based) — requires both DANE match and CA validation",
+                            "detail": _TLSA_USAGE.get(usage, ""),
+                            "recommendation": "Ensure the certificate chain satisfies both PKIX and DANE constraints",
+                        })
+                    elif usage == 3:
+                        findings.append({
+                            "severity": "INFO",
+                            "finding": "TLSA usage 3 (DANE-EE) — strongest DANE mode, bypasses CA system",
+                            "detail": "The leaf certificate must match the TLSA record exactly. PKIX validation is not required.",
+                            "recommendation": "Update the TLSA record whenever the certificate is renewed",
+                        })
+
+                    if matching == 0:
+                        findings.append({
+                            "severity": "LOW",
+                            "finding": "TLSA uses full certificate match (matching type 0) instead of a hash",
+                            "detail": "Full certificate data in DNS increases record size and is less common",
+                            "recommendation": "Consider SHA-256 (matching type 1) for smaller, more standard TLSA records",
+                        })
+
+    dane_configured = len(parsed_tlsa) > 0
+
+    # --- DNSSEC dependency ---
+    dnssec_ok = False
+    if dnssec_data and isinstance(dnssec_data, dict):
+        dnssec_status = dnssec_data.get("status", "unknown")
+        dnssec_ok = dnssec_status == "secure"
+        if dane_configured and not dnssec_ok:
+            findings.append({
+                "severity": "CRITICAL",
+                "finding": "DANE TLSA records exist but DNSSEC is not fully validated",
+                "detail": f"DNSSEC status: {dnssec_status}. DANE requires a secure DNSSEC chain to prevent "
+                          "spoofed TLSA records from being used in MitM attacks.",
+                "recommendation": "Enable and validate DNSSEC before relying on DANE for certificate pinning",
+            })
+
+    if dane_configured and dnssec_ok:
+        findings.append({
+            "severity": "INFO",
+            "finding": "DANE is properly configured with DNSSEC validation",
+            "detail": "TLSA records are protected by a secure DNSSEC chain",
+            "recommendation": "Maintain DNSSEC signing and update TLSA records on certificate renewal",
+        })
+
+    # --- Certificate info ---
+    cert_info = {}
+    if ssl_data and isinstance(ssl_data, dict):
+        chain = ssl_data.get("chain", [])
+        if chain and isinstance(chain, list) and isinstance(chain[0], dict):
+            leaf = chain[0]
+            cert_info = {
+                "subject": leaf.get("subject"),
+                "issuer": leaf.get("issuer"),
+                "key_type": leaf.get("key_type"),
+                "key_bits": leaf.get("key_bits"),
+                "valid_until": leaf.get("valid_until"),
+                "is_valid": ssl_data.get("is_valid", False),
+            }
+
+    if not dane_configured:
+        findings.append({
+            "severity": "INFO",
+            "finding": f"No DANE TLSA records at {tlsa_name}",
+            "detail": "DANE is not configured for this domain/port combination",
+            "recommendation": "Consider adding DANE TLSA records if DNSSEC is enabled — provides certificate "
+                              "pinning independent of the CA system",
+        })
+
+    return json.dumps({
+        "domain": domain,
+        "port": port,
+        "tlsa_name": tlsa_name,
+        "dane_configured": dane_configured,
+        "dnssec_validated": dnssec_ok,
+        "tlsa_records": parsed_tlsa,
+        "certificate": cert_info,
+        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
+    }, default=str)
+
+
 SECURITY_TOOLS = [
     domain_reputation_check,
     zone_transfer_test,
     mta_sts_check,
+    dane_tlsa_check,
 ]

@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from familiar.tools.security_tools import domain_reputation_check, mta_sts_check, zone_transfer_test
+from familiar.tools.security_tools import dane_tlsa_check, domain_reputation_check, mta_sts_check, zone_transfer_test
 
 
 class TestDomainReputationCheck:
@@ -120,3 +120,42 @@ class TestMtaStsCheck:
         assert result["mta_sts"]["policy"]["found"] is False
         assert result["tls_rpt"]["found"] is False
         assert any(f["severity"] in ("MEDIUM", "LOW") for f in result["findings"])
+
+
+class TestDaneTlsaCheck:
+    """Tests for the dane_tlsa_check tool."""
+
+    @patch("familiar.tools.security_tools.seer")
+    def test_no_tlsa(self, mock_seer):
+        mock_seer.dig.return_value = []
+        mock_seer.ssl.return_value = {"is_valid": True, "chain": [{"subject": "example.com"}]}
+        mock_seer.dnssec.return_value = {"status": "insecure"}
+        result = json.loads(dane_tlsa_check.invoke({"domain": "example.com"}))
+        assert result["domain"] == "example.com"
+        assert result["dane_configured"] is False
+
+    @patch("familiar.tools.security_tools.seer")
+    def test_with_tlsa_records(self, mock_seer):
+        def _dig(query, record_type="A", nameserver=None):
+            if record_type == "TLSA":
+                return [{"data": {"usage": 3, "selector": 1, "matching_type": 1,
+                         "certificate_data": "abc123"}, "record_type": "TLSA"}]
+            return []
+        mock_seer.dig.side_effect = _dig
+        mock_seer.ssl.return_value = {
+            "is_valid": True,
+            "chain": [{"subject": "example.com", "key_type": "EC", "key_bits": 256}],
+        }
+        mock_seer.dnssec.return_value = {"status": "secure"}
+        result = json.loads(dane_tlsa_check.invoke({"domain": "example.com"}))
+        assert result["dane_configured"] is True
+        assert len(result["tlsa_records"]) >= 1
+
+    @patch("familiar.tools.security_tools.seer")
+    def test_smtp_port(self, mock_seer):
+        mock_seer.dig.return_value = []
+        mock_seer.ssl.return_value = None
+        mock_seer.dnssec.return_value = {"status": "insecure"}
+        result = json.loads(dane_tlsa_check.invoke({"domain": "mail.example.com", "port": "25"}))
+        assert result["port"] == 25
+        mock_seer.dig.assert_any_call("_25._tcp.mail.example.com", "TLSA")
