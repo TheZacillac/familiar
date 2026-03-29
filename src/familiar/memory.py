@@ -50,6 +50,14 @@ class Memory:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS domain_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    captured_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_snapshots_domain
+                    ON domain_snapshots(domain, captured_at DESC);
             """)
             self._conn.commit()
 
@@ -57,6 +65,7 @@ class Memory:
 
     def remember_domain(self, domain: str, notes: str = "", tags: str = "") -> dict:
         """Save or update a domain in the notebook. Appends notes, merges tags."""
+        self._check_open()
         now = datetime.now(timezone.utc).isoformat()
         domain = domain.lower().strip()
         with self._lock:
@@ -74,16 +83,18 @@ class Memory:
                     (merged_notes, merged_tags, now, domain),
                 )
             else:
+                normalized_tags = ",".join(sorted(set(filter(None, (t.strip() for t in tags.split(","))))))
                 self._conn.execute(
                     "INSERT INTO domain_notes (domain, notes, tags, first_seen, last_seen) "
                     "VALUES (?, ?, ?, ?, ?)",
-                    (domain, notes, tags, now, now),
+                    (domain, notes, normalized_tags, now, now),
                 )
             self._conn.commit()
             return self._get_domain_note_unlocked(domain)
 
     def recall_domain(self, domain: str) -> dict | None:
         """Retrieve notes for a specific domain."""
+        self._check_open()
         with self._lock:
             return self._get_domain_note_unlocked(domain.lower().strip())
 
@@ -112,7 +123,7 @@ class Memory:
                     "notes": r["notes"],
                     "tags": r["tags"],
                     "first_seen": r["first_seen"],
-                    "last_updated": r["last_seen"],
+                    "last_seen": r["last_seen"],
                 }
                 for r in rows
                 if tag in [t.strip().lower() for t in r["tags"].split(",")]
@@ -132,11 +143,20 @@ class Memory:
         now = datetime.now(timezone.utc).isoformat()
         domain = domain.lower().strip()
         with self._lock:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 "INSERT OR IGNORE INTO watchlist (domain, added) VALUES (?, ?)",
                 (domain, now),
             )
             self._conn.commit()
+            if cursor.rowcount == 0:
+                row = self._conn.execute(
+                    "SELECT added FROM watchlist WHERE domain = ?", (domain,)
+                ).fetchone()
+                return {
+                    "domain": domain,
+                    "added": row["added"] if row else now,
+                    "status": "already_watching",
+                }
         return {"domain": domain, "added": now, "status": "added"}
 
     def watchlist_remove(self, domain: str) -> dict:
@@ -185,7 +205,93 @@ class Memory:
             )
             self._conn.commit()
 
-    def close(self):
-        """Close the database connection."""
+    # --- Domain Snapshots ---
+
+    def save_snapshot(self, domain: str, data: dict) -> dict:
+        """Save a structured snapshot of a domain's current state."""
+        self._check_open()
+        now = datetime.now(timezone.utc).isoformat()
+        domain = domain.lower().strip()
+        data_json = json.dumps(data, default=str)
         with self._lock:
-            self._conn.close()
+            cursor = self._conn.execute(
+                "INSERT INTO domain_snapshots (domain, data, captured_at) VALUES (?, ?, ?)",
+                (domain, data_json, now),
+            )
+            self._conn.commit()
+            return {
+                "domain": domain,
+                "snapshot_id": cursor.lastrowid,
+                "captured_at": now,
+            }
+
+    def list_snapshots(self, domain: str, limit: int = 20) -> list[dict]:
+        """List snapshots for a domain, most recent first."""
+        domain = domain.lower().strip()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, domain, data, captured_at FROM domain_snapshots "
+                "WHERE domain = ? ORDER BY captured_at DESC LIMIT ?",
+                (domain, limit),
+            ).fetchall()
+            return [
+                {"snapshot_id": r["id"], "domain": r["domain"], "data": r["data"], "captured_at": r["captured_at"]}
+                for r in rows
+            ]
+
+    def get_latest_snapshot(self, domain: str) -> dict | None:
+        """Get the most recent snapshot for a domain."""
+        snapshots = self.list_snapshots(domain, limit=1)
+        return snapshots[0] if snapshots else None
+
+    def diff_snapshots(self, snapshot_id_a: int, snapshot_id_b: int) -> dict:
+        """Compare two snapshots and return the differences."""
+        with self._lock:
+            row_a = self._conn.execute(
+                "SELECT id, domain, data, captured_at FROM domain_snapshots WHERE id = ?",
+                (snapshot_id_a,),
+            ).fetchone()
+            row_b = self._conn.execute(
+                "SELECT id, domain, data, captured_at FROM domain_snapshots WHERE id = ?",
+                (snapshot_id_b,),
+            ).fetchone()
+
+        if not row_a:
+            raise ValueError(f"Snapshot {snapshot_id_a} not found")
+        if not row_b:
+            raise ValueError(f"Snapshot {snapshot_id_b} not found")
+
+        data_a = json.loads(row_a["data"])
+        data_b = json.loads(row_b["data"])
+
+        changes = []
+        all_keys = sorted(set(list(data_a.keys()) + list(data_b.keys())))
+        for key in all_keys:
+            val_a = data_a.get(key)
+            val_b = data_b.get(key)
+            if val_a != val_b:
+                changes.append({
+                    "field": key,
+                    "old": val_a,
+                    "new": val_b,
+                })
+
+        return {
+            "domain": row_a["domain"],
+            "snapshot_a": {"id": row_a["id"], "captured_at": row_a["captured_at"]},
+            "snapshot_b": {"id": row_b["id"], "captured_at": row_b["captured_at"]},
+            "changes": changes,
+            "total_changes": len(changes),
+        }
+
+    def _check_open(self):
+        """Raise RuntimeError if the database connection has been closed."""
+        if self._conn is None:
+            raise RuntimeError("Memory database is closed")
+
+    def close(self):
+        """Close the database connection. Safe to call multiple times."""
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
