@@ -2,24 +2,28 @@
 
 import atexit
 import json
+import threading
 from datetime import datetime, timezone
 
 import seer
 from langchain_core.tools import tool
 
 from ..memory import Memory
-from ..utils import days_until as _days_until, safe_call
+from ..utils import days_until as _days_until, parallel_calls, safe_call
 
-# Module-level singleton, initialized lazily
+# Module-level singleton, initialized lazily with double-checked locking
 _memory: Memory | None = None
+_memory_lock = threading.Lock()
 
 
 def get_memory() -> Memory:
     """Get the shared Memory singleton. Registered for cleanup at process exit."""
     global _memory
     if _memory is None:
-        _memory = Memory()
-        atexit.register(_memory.close)
+        with _memory_lock:
+            if _memory is None:
+                _memory = Memory()
+                atexit.register(_memory.close)
     return _memory
 
 
@@ -90,8 +94,12 @@ def watchlist_check() -> str:
     domains = [w["domain"] for w in watched]
     alerts = []
 
-    bulk_status_raw = safe_call(seer.bulk_status, domains) or [None] * len(domains)
-    bulk_lookup_raw = safe_call(seer.bulk_lookup, domains) or [None] * len(domains)
+    _bs, _bl = parallel_calls(
+        (seer.bulk_status, domains),
+        (seer.bulk_lookup, domains),
+    )
+    bulk_status_raw = _bs if _bs is not None else [None] * len(domains)
+    bulk_lookup_raw = _bl if _bl is not None else [None] * len(domains)
 
     for i, domain in enumerate(domains):
         domain_alerts = []
@@ -118,7 +126,13 @@ def watchlist_check() -> str:
             if expiry:
                 days_left = _days_until(expiry)
                 if days_left is not None:
-                    if days_left < 30:
+                    if days_left < 0:
+                        domain_alerts.append({
+                            "type": "expiration",
+                            "severity": "critical",
+                            "message": f"Expired {abs(days_left)} days ago ({expiry})",
+                        })
+                    elif days_left < 30:
                         domain_alerts.append({
                             "type": "expiration",
                             "severity": "critical",
@@ -131,37 +145,46 @@ def watchlist_check() -> str:
                             "message": f"Expires in {days_left} days ({expiry})",
                         })
 
-        # SSL check — certificate info is nested under .certificate
+        # HTTP + SSL checks — certificate info is nested under .certificate
         if st and isinstance(st, dict):
-            cert = st.get("certificate")
-            if cert and isinstance(cert, dict):
-                if not cert.get("is_valid", True):
-                    domain_alerts.append({
-                        "type": "ssl",
-                        "severity": "critical",
-                        "message": "SSL certificate is invalid or missing",
-                    })
-                ssl_days = cert.get("days_until_expiry")
-                if ssl_days is not None and ssl_days < 14:
-                    domain_alerts.append({
-                        "type": "ssl_expiry",
-                        "severity": "warning",
-                        "message": f"SSL certificate expires in {ssl_days} days",
-                    })
-            elif cert is None:
-                # No certificate at all
-                domain_alerts.append({
-                    "type": "ssl",
-                    "severity": "warning",
-                    "message": "No SSL certificate detected",
-                })
+            http_unreachable = st.get("http_status") is None
 
-            if st.get("http_status") is None:
+            if http_unreachable:
                 domain_alerts.append({
                     "type": "http",
                     "severity": "warning",
                     "message": "Domain is not responding to HTTP requests",
                 })
+                # SSL absence is a consequence of HTTP unreachability — don't
+                # report it as a separate issue.
+            else:
+                cert = st.get("certificate")
+                if cert and isinstance(cert, dict):
+                    if not cert.get("is_valid", True):
+                        domain_alerts.append({
+                            "type": "ssl",
+                            "severity": "critical",
+                            "message": "SSL certificate is invalid or missing",
+                        })
+                    ssl_days = cert.get("days_until_expiry")
+                    if ssl_days is not None and ssl_days < 0:
+                        domain_alerts.append({
+                            "type": "ssl_expiry",
+                            "severity": "critical",
+                            "message": f"SSL certificate expired {abs(ssl_days)} days ago",
+                        })
+                    elif ssl_days is not None and ssl_days < 14:
+                        domain_alerts.append({
+                            "type": "ssl_expiry",
+                            "severity": "warning",
+                            "message": f"SSL certificate expires in {ssl_days} days",
+                        })
+                elif cert is None:
+                    domain_alerts.append({
+                        "type": "ssl",
+                        "severity": "warning",
+                        "message": "No SSL certificate detected",
+                    })
 
         # Save check status
         mem.watchlist_update_status(domain, {
@@ -274,29 +297,18 @@ def compare_domains(domain_a: str, domain_b: str) -> str:
 
     comparison = {"domain_a": domain_a, "domain_b": domain_b}
 
-    # Registration comparison
-    try:
-        reg_a = safe_call(seer.lookup, domain_a)
-        reg_b = safe_call(seer.lookup, domain_b)
-        comparison["registration"] = {"a": reg_a, "b": reg_b}
-    except Exception as e:
-        comparison["registration"] = {"error": str(e)}
-
-    # DNS A record comparison
-    try:
-        dns_a = safe_call(seer.dig, domain_a, "A")
-        dns_b = safe_call(seer.dig, domain_b, "A")
-        comparison["dns_a_records"] = {"a": dns_a, "b": dns_b}
-    except Exception as e:
-        comparison["dns_a_records"] = {"error": str(e)}
-
-    # Status comparison
-    try:
-        status_a = safe_call(seer.status, domain_a)
-        status_b = safe_call(seer.status, domain_b)
-        comparison["status"] = {"a": status_a, "b": status_b}
-    except Exception as e:
-        comparison["status"] = {"error": str(e)}
+    # Run all lookups concurrently (all 6 calls are independent)
+    reg_a, reg_b, dns_a, dns_b, status_a, status_b = parallel_calls(
+        (seer.lookup, domain_a),
+        (seer.lookup, domain_b),
+        (seer.dig, domain_a, "A"),
+        (seer.dig, domain_b, "A"),
+        (seer.status, domain_a),
+        (seer.status, domain_b),
+    )
+    comparison["registration"] = {"domain_a": reg_a, "domain_b": reg_b}
+    comparison["dns_a_records"] = {"domain_a": dns_a, "domain_b": dns_b}
+    comparison["status"] = {"domain_a": status_a, "domain_b": status_b}
 
     return json.dumps(comparison, default=str)
 
@@ -311,7 +323,7 @@ def session_summary() -> str:
         watched = mem.watchlist_list()
 
         domain_list = [
-            {"domain": d["domain"], "tags": d["tags"], "last_updated": d["last_seen"]}
+            {"domain": d["domain"], "tags": d["tags"], "last_seen": d["last_seen"]}
             for d in domains
         ]
 
@@ -330,4 +342,102 @@ WORKFLOW_TOOLS = [
     create_report,
     compare_domains,
     session_summary,
+]
+
+
+# --- Snapshot Tools ---
+
+
+@tool
+def snapshot_domain(domain: str) -> str:
+    """Capture a structured snapshot of a domain's current state: registration data,
+    DNS nameservers, HTTP status, SSL validity, and DNSSEC status. Snapshots are stored
+    persistently and can be compared with diff_snapshots to track changes over time."""
+    domain = domain.lower().strip()
+
+    # Gather current domain state concurrently
+    lookup_data, status_data, ns_records, dnssec_data = parallel_calls(
+        (seer.lookup, domain),
+        (seer.status, domain),
+        (seer.dig, domain, "NS"),
+        (seer.dnssec, domain),
+    )
+
+    # Build snapshot data dict
+    snapshot_data = {"domain": domain}
+
+    # Registration data
+    if lookup_data and isinstance(lookup_data, dict):
+        inner = lookup_data.get("data", lookup_data)
+        if isinstance(inner, dict):
+            snapshot_data["registrar"] = inner.get("registrar")
+            snapshot_data["expiration_date"] = inner.get("expiration_date") or inner.get("expiry")
+            snapshot_data["creation_date"] = inner.get("creation_date") or inner.get("created")
+            snapshot_data["source"] = lookup_data.get("source")
+
+    # Nameservers
+    if ns_records and isinstance(ns_records, list):
+        ns_list = []
+        for rec in ns_records:
+            if isinstance(rec, dict):
+                data = rec.get("data", rec)
+                ns = data.get("nameserver", str(data)) if isinstance(data, dict) else str(data)
+                ns_list.append(ns.rstrip("."))
+        snapshot_data["nameservers"] = sorted(ns_list)
+
+    # HTTP/SSL status
+    if status_data and isinstance(status_data, dict):
+        snapshot_data["http_status"] = status_data.get("http_status")
+        cert = status_data.get("certificate")
+        if cert and isinstance(cert, dict):
+            snapshot_data["ssl_valid"] = cert.get("is_valid")
+            snapshot_data["ssl_issuer"] = cert.get("issuer")
+            snapshot_data["ssl_expiry"] = cert.get("expiry") or cert.get("not_after")
+            snapshot_data["ssl_days_remaining"] = cert.get("days_until_expiry")
+
+    # DNSSEC
+    if dnssec_data and isinstance(dnssec_data, dict):
+        snapshot_data["dnssec_status"] = dnssec_data.get("status")
+
+    # Save the snapshot
+    mem = get_memory()
+    save_result = mem.save_snapshot(domain, snapshot_data)
+
+    # Also auto-remember the domain in the notebook
+    safe_call(mem.remember_domain, domain, "", "snapshot")
+
+    return json.dumps(save_result, default=str)
+
+
+@tool
+def diff_snapshots(snapshot_id_a: int, snapshot_id_b: int) -> str:
+    """Compare two domain snapshots by their IDs and show what changed. Use
+    snapshot_domain first to capture snapshots at different times, then diff_snapshots
+    to see registration, DNS, SSL, or other changes between them."""
+    try:
+        result = get_memory().diff_snapshots(int(snapshot_id_a), int(snapshot_id_b))
+        return json.dumps(result, default=str)
+    except (ValueError, TypeError) as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def list_domain_snapshots(domain: str) -> str:
+    """List all stored snapshots for a domain, most recent first. Each entry includes
+    the snapshot ID (for use with diff_snapshots) and the capture timestamp."""
+    snapshots = get_memory().list_snapshots(domain.lower().strip())
+    return json.dumps({
+        "domain": domain,
+        "total": len(snapshots),
+        "snapshots": [
+            {"snapshot_id": s["snapshot_id"], "captured_at": s["captured_at"]}
+            for s in snapshots
+        ],
+    }, default=str)
+
+
+SNAPSHOT_TOOLS = [
+    snapshot_domain,
+    diff_snapshots,
+    list_domain_snapshots,
 ]
