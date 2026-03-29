@@ -603,9 +603,206 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
     }, default=str)
 
 
+# Technology fingerprint patterns: (header_field, pattern, tech_name, category)
+_TECH_FINGERPRINTS = [
+    # Web servers
+    ("server", r"nginx", "nginx", "Web Server"),
+    ("server", r"apache", "Apache", "Web Server"),
+    ("server", r"cloudflare", "Cloudflare", "CDN/Web Server"),
+    ("server", r"microsoft-iis", "IIS", "Web Server"),
+    ("server", r"litespeed", "LiteSpeed", "Web Server"),
+    ("server", r"caddy", "Caddy", "Web Server"),
+    ("server", r"openresty", "OpenResty", "Web Server"),
+    ("server", r"gunicorn", "Gunicorn", "WSGI Server"),
+    ("server", r"uvicorn", "Uvicorn", "ASGI Server"),
+    ("server", r"cowboy", "Cowboy (Erlang)", "Web Server"),
+    # Languages/runtimes
+    ("x-powered-by", r"php", "PHP", "Language"),
+    ("x-powered-by", r"asp\.net", "ASP.NET", "Framework"),
+    ("x-powered-by", r"express", "Express.js", "Framework"),
+    ("x-powered-by", r"next\.js", "Next.js", "Framework"),
+    ("x-powered-by", r"nuxt", "Nuxt.js", "Framework"),
+    # CMS platforms
+    ("x-powered-by", r"wordpress", "WordPress", "CMS"),
+    ("x-powered-by", r"drupal", "Drupal", "CMS"),
+    ("x-generator", r"wordpress", "WordPress", "CMS"),
+    ("x-generator", r"drupal", "Drupal", "CMS"),
+    ("x-generator", r"joomla", "Joomla", "CMS"),
+    ("x-generator", r"hugo", "Hugo", "Static Site Generator"),
+    ("x-generator", r"gatsby", "Gatsby", "Static Site Generator"),
+    ("x-generator", r"astro", "Astro", "Static Site Generator"),
+    # CDN/proxy
+    ("x-served-by", r"cache", "Varnish/CDN Cache", "Caching"),
+    ("x-cache", r".", "CDN Cache Layer", "Caching"),
+    ("cf-ray", r".", "Cloudflare", "CDN"),
+    ("x-vercel-id", r".", "Vercel", "Platform"),
+    ("x-netlify", r".", "Netlify", "Platform"),
+    ("x-amz-cf-id", r".", "AWS CloudFront", "CDN"),
+    ("x-azure-ref", r".", "Azure Front Door", "CDN"),
+    # Security headers
+    ("x-xss-protection", r".", "XSS Protection Header", "Security Header"),
+    ("x-content-type-options", r"nosniff", "X-Content-Type-Options", "Security Header"),
+    ("strict-transport-security", r".", "HSTS", "Security Header"),
+    ("content-security-policy", r".", "CSP", "Security Header"),
+    ("permissions-policy", r".", "Permissions-Policy", "Security Header"),
+    ("referrer-policy", r".", "Referrer-Policy", "Security Header"),
+]
+
+# Cookie-based CMS detection patterns
+_COOKIE_FINGERPRINTS = [
+    (r"wp_", "WordPress", "CMS"),
+    (r"wordpress", "WordPress", "CMS"),
+    (r"drupal", "Drupal", "CMS"),
+    (r"joomla", "Joomla", "CMS"),
+    (r"laravel_session", "Laravel", "Framework"),
+    (r"django", "Django", "Framework"),
+    (r"rails", "Ruby on Rails", "Framework"),
+    (r"phpsessid", "PHP", "Language"),
+    (r"jsessionid", "Java", "Language"),
+    (r"asp\.net", "ASP.NET", "Framework"),
+    (r"__cfduid|__cf_bm", "Cloudflare", "CDN"),
+    (r"incap_ses", "Imperva/Incapsula", "WAF"),
+    (r"visid_incap", "Imperva/Incapsula", "WAF"),
+    (r"akamai", "Akamai", "CDN"),
+]
+
+
+def _fetch_http_headers(domain: str, timeout: float = 8.0) -> dict:
+    """Fetch HTTP response headers from a domain via HEAD request."""
+    url = f"https://{domain}/"
+    try:
+        req = Request(url, method="HEAD", headers={"User-Agent": "familiar/0.1"})
+        with urlopen(req, timeout=timeout) as resp:
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+            return {"success": True, "status_code": resp.status, "headers": headers}
+    except Exception:
+        # Retry with HTTP if HTTPS fails
+        try:
+            url = f"http://{domain}/"
+            req = Request(url, method="HEAD", headers={"User-Agent": "familiar/0.1"})
+            with urlopen(req, timeout=timeout) as resp:
+                headers = {k.lower(): v for k, v in resp.headers.items()}
+                return {"success": True, "status_code": resp.status, "headers": headers}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+@tool
+def website_fingerprint(domain: str) -> str:
+    """Identify web technologies, CMS platforms, frameworks, CDN providers, and
+    security headers by analyzing HTTP response headers and cookies. Detects
+    server software, language/runtime, CMS, caching layers, and security posture."""
+    domain = domain.lower().strip()
+
+    # Fetch HTTP headers and DNS data concurrently
+    header_data, cname_records, txt_records = parallel_calls(
+        (_fetch_http_headers, domain),
+        (seer.dig, domain, "CNAME"),
+        (seer.dig, domain, "TXT"),
+    )
+
+    technologies = []
+    seen_techs = set()  # Deduplicate
+
+    def _add_tech(name, category, evidence, confidence="high"):
+        key = f"{name}:{category}"
+        if key not in seen_techs:
+            seen_techs.add(key)
+            technologies.append({
+                "name": name,
+                "category": category,
+                "evidence": evidence,
+                "confidence": confidence,
+            })
+
+    security_headers = {}
+    raw_headers = {}
+
+    if header_data and isinstance(header_data, dict) and header_data.get("success"):
+        headers = header_data.get("headers", {})
+        raw_headers = dict(headers)
+
+        # Header-based detection
+        for header_field, pattern, tech_name, category in _TECH_FINGERPRINTS:
+            value = headers.get(header_field, "")
+            if value and re.search(pattern, value, re.IGNORECASE):
+                if category == "Security Header":
+                    security_headers[tech_name] = value
+                else:
+                    version_match = re.search(r"[\d]+\.[\d]+(?:\.[\d]+)?", value)
+                    evidence = f"{header_field}: {value[:100]}"
+                    _add_tech(
+                        f"{tech_name}/{version_match.group()}" if version_match else tech_name,
+                        category,
+                        evidence,
+                    )
+
+        # Cookie-based detection
+        cookies = headers.get("set-cookie", "")
+        for pattern, tech_name, category in _COOKIE_FINGERPRINTS:
+            if re.search(pattern, cookies, re.IGNORECASE):
+                _add_tech(tech_name, category, f"Cookie pattern: {pattern}", confidence="medium")
+
+    # DNS-based detection (CNAME fingerprinting)
+    if cname_records and isinstance(cname_records, list):
+        for rec in cname_records:
+            if isinstance(rec, dict):
+                data = rec.get("data", rec)
+                target = ""
+                if isinstance(data, dict):
+                    target = data.get("target", data.get("cname", "")).lower().rstrip(".")
+                else:
+                    target = str(data).lower().rstrip(".")
+
+                if "shopify" in target:
+                    _add_tech("Shopify", "E-Commerce Platform", f"CNAME → {target}")
+                elif "squarespace" in target:
+                    _add_tech("Squarespace", "Website Builder", f"CNAME → {target}")
+                elif "wixdns" in target or "wixsite" in target:
+                    _add_tech("Wix", "Website Builder", f"CNAME → {target}")
+                elif "ghost.io" in target:
+                    _add_tech("Ghost", "CMS", f"CNAME → {target}")
+                elif "webflow" in target:
+                    _add_tech("Webflow", "Website Builder", f"CNAME → {target}")
+                elif "github.io" in target:
+                    _add_tech("GitHub Pages", "Hosting", f"CNAME → {target}")
+                elif "netlify" in target:
+                    _add_tech("Netlify", "Platform", f"CNAME → {target}")
+                elif "vercel" in target:
+                    _add_tech("Vercel", "Platform", f"CNAME → {target}")
+
+    # TXT-based technology detection
+    if txt_records and isinstance(txt_records, list):
+        for rec in txt_records:
+            txt = _extract_txt_value(rec)
+            txt_lower = txt.lower()
+            if "google-site-verification" in txt_lower:
+                _add_tech("Google Search Console", "SEO/Analytics", "TXT verification record", confidence="medium")
+            elif re.match(r"ms=ms\d", txt_lower):
+                _add_tech("Microsoft 365", "Email/Productivity", "TXT verification record", confidence="medium")
+            elif "facebook-domain-verification" in txt_lower:
+                _add_tech("Meta/Facebook", "Advertising", "TXT verification record", confidence="medium")
+            elif "apple-domain-verification" in txt_lower:
+                _add_tech("Apple", "Platform", "TXT verification record", confidence="medium")
+            elif "atlassian-domain-verification" in txt_lower:
+                _add_tech("Atlassian", "Productivity", "TXT verification record", confidence="medium")
+            elif "docusign" in txt_lower:
+                _add_tech("DocuSign", "Business Tool", "TXT verification record", confidence="medium")
+
+    return json.dumps({
+        "domain": domain,
+        "technologies": technologies,
+        "security_headers": security_headers,
+        "security_header_count": len(security_headers),
+        "total_technologies": len(technologies),
+        "headers_available": bool(raw_headers),
+    }, default=str)
+
+
 SECURITY_TOOLS = [
     domain_reputation_check,
     zone_transfer_test,
     mta_sts_check,
     dane_tlsa_check,
+    website_fingerprint,
 ]

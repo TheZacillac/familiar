@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from familiar.tools.security_tools import dane_tlsa_check, domain_reputation_check, mta_sts_check, zone_transfer_test
+from familiar.tools.security_tools import dane_tlsa_check, domain_reputation_check, mta_sts_check, website_fingerprint, zone_transfer_test
 
 
 class TestDomainReputationCheck:
@@ -159,3 +159,38 @@ class TestDaneTlsaCheck:
         result = json.loads(dane_tlsa_check.invoke({"domain": "mail.example.com", "port": "25"}))
         assert result["port"] == 25
         mock_seer.dig.assert_any_call("_25._tcp.mail.example.com", "TLSA")
+
+
+class TestWebsiteFingerprint:
+    """Tests for the website_fingerprint tool."""
+
+    @patch("familiar.tools.security_tools._fetch_http_headers")
+    @patch("familiar.tools.security_tools.seer")
+    def test_detects_technologies(self, mock_seer, mock_fetch):
+        mock_seer.dig.return_value = []
+        mock_seer.status.return_value = {"http_status": 200}
+        mock_fetch.return_value = {
+            "success": True,
+            "status_code": 200,
+            "headers": {
+                "server": "nginx/1.24",
+                "x-powered-by": "PHP/8.2",
+                "set-cookie": "wp_session=abc123",
+            },
+        }
+        result = json.loads(website_fingerprint.invoke({"domain": "example.com"}))
+        assert result["domain"] == "example.com"
+        techs = result["technologies"]
+        tech_names = [t["name"] for t in techs]
+        # Should detect nginx and PHP from headers
+        assert any("nginx" in name for name in tech_names)
+        assert any("PHP" in name for name in tech_names)
+
+    @patch("familiar.tools.security_tools._fetch_http_headers")
+    @patch("familiar.tools.security_tools.seer")
+    def test_unreachable_site(self, mock_seer, mock_fetch):
+        mock_seer.dig.return_value = []
+        mock_seer.status.return_value = {"http_status": None}
+        mock_fetch.return_value = {"success": False, "error": "Connection refused"}
+        result = json.loads(website_fingerprint.invoke({"domain": "down.com"}))
+        assert result["total_technologies"] == 0
