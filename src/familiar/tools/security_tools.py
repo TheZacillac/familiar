@@ -9,6 +9,8 @@ import json
 import re
 import socket
 import struct
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 import seer
 from langchain_core.tools import tool
@@ -293,7 +295,170 @@ def zone_transfer_test(domain: str) -> str:
     }, default=str)
 
 
+def _extract_txt_value(record) -> str:
+    """Extract text value from a seer dig TXT record."""
+    if isinstance(record, dict):
+        data = record.get("data", record)
+        if isinstance(data, dict):
+            return data.get("text", data.get("value", str(data)))
+        return str(data)
+    return str(record)
+
+
+def _fetch_mta_sts_policy(domain: str, timeout: float = 5.0) -> dict:
+    """Fetch the MTA-STS policy file from .well-known/mta-sts.txt."""
+    url = f"https://mta-sts.{domain}/.well-known/mta-sts.txt"
+    try:
+        req = Request(url, headers={"User-Agent": "familiar/0.1"})
+        with urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                body = resp.read(8192).decode("utf-8", errors="replace")
+                return {"success": True, "policy": body.strip()}
+            return {"success": False, "error": f"HTTP {resp.status}"}
+    except URLError as e:
+        return {"success": False, "error": str(e)}
+    except OSError as e:
+        return {"success": False, "error": str(e)}
+
+
+@tool
+def mta_sts_check(domain: str) -> str:
+    """Check MTA-STS (RFC 8461) and TLS-RPT (RFC 8460) configuration. MTA-STS
+    enforces TLS for inbound email, preventing downgrade attacks. TLS-RPT enables
+    reporting of TLS negotiation failures. Checks the _mta-sts TXT record, the
+    .well-known/mta-sts.txt policy file, and the _smtp._tls TXT record."""
+    domain = domain.lower().strip()
+
+    # Fetch all DNS records and the policy file concurrently
+    sts_txt, tlsrpt_txt, mx_records, policy_raw = parallel_calls(
+        (seer.dig, f"_mta-sts.{domain}", "TXT"),
+        (seer.dig, f"_smtp._tls.{domain}", "TXT"),
+        (seer.dig, domain, "MX"),
+        (_fetch_mta_sts_policy, domain),
+    )
+
+    findings = []
+    has_mx = bool(mx_records and isinstance(mx_records, list) and len(mx_records) > 0)
+
+    # --- MTA-STS TXT Record ---
+    sts_txt_info = {"found": False}
+    if sts_txt and isinstance(sts_txt, list):
+        for rec in sts_txt:
+            txt = _extract_txt_value(rec)
+            if "v=stsv1" in txt.lower():
+                sts_txt_info = {"found": True, "record": txt.strip()}
+                for part in txt.split(";"):
+                    part = part.strip()
+                    if part.lower().startswith("id="):
+                        sts_txt_info["id"] = part.split("=", 1)[1].strip()
+                break
+
+    # --- MTA-STS Policy File ---
+    sts_policy_info = {"found": False}
+    if policy_raw and isinstance(policy_raw, dict) and policy_raw.get("success"):
+        raw_policy = policy_raw["policy"]
+        sts_policy_info["found"] = True
+        sts_policy_info["raw"] = raw_policy
+
+        for line in raw_policy.splitlines():
+            line = line.strip()
+            if ":" in line:
+                key, _, val = line.partition(":")
+                key = key.strip().lower()
+                val = val.strip()
+                if key == "mode":
+                    sts_policy_info["mode"] = val
+                elif key == "max_age":
+                    sts_policy_info["max_age"] = val
+                elif key == "mx":
+                    sts_policy_info.setdefault("mx_patterns", []).append(val)
+
+        mode = sts_policy_info.get("mode", "")
+        if mode == "none":
+            findings.append({
+                "severity": "MEDIUM",
+                "finding": "MTA-STS policy mode is 'none' — no enforcement",
+                "detail": "Policy exists but does not enforce TLS for inbound email",
+                "recommendation": "Set mode to 'testing' then 'enforce' after validating delivery",
+            })
+        elif mode == "testing":
+            findings.append({
+                "severity": "LOW",
+                "finding": "MTA-STS policy mode is 'testing' — monitoring only",
+                "detail": "TLS failures are reported but mail is still delivered over plaintext",
+                "recommendation": "Upgrade to 'enforce' mode after confirming all MX servers support TLS",
+            })
+
+        max_age = sts_policy_info.get("max_age", "")
+        try:
+            if max_age and int(max_age) < 86400:
+                findings.append({
+                    "severity": "LOW",
+                    "finding": f"MTA-STS max_age is short ({max_age}s / {int(max_age) // 3600}h)",
+                    "detail": "Short max_age means senders must re-fetch the policy frequently",
+                    "recommendation": "Consider max_age of at least 86400 (1 day), ideally 604800 (1 week)",
+                })
+        except ValueError:
+            pass
+
+    # --- Consistency checks ---
+    if sts_txt_info["found"] and not sts_policy_info["found"]:
+        findings.append({
+            "severity": "HIGH",
+            "finding": "MTA-STS TXT record exists but policy file is missing",
+            "detail": f"The _mta-sts TXT record advertises STS, but https://mta-sts.{domain}/.well-known/mta-sts.txt is unreachable",
+            "recommendation": "Publish the MTA-STS policy file at the .well-known URL on the mta-sts subdomain",
+        })
+    elif not sts_txt_info["found"] and sts_policy_info["found"]:
+        findings.append({
+            "severity": "HIGH",
+            "finding": "MTA-STS policy file exists but TXT record is missing",
+            "detail": f"Senders will not discover the policy without the _mta-sts TXT record",
+            "recommendation": f"Add a TXT record at _mta-sts.{domain} with v=STSv1; id=<unique-id>",
+        })
+    elif not sts_txt_info["found"] and not sts_policy_info["found"] and has_mx:
+        findings.append({
+            "severity": "MEDIUM",
+            "finding": "No MTA-STS configured for domain with MX records",
+            "detail": "Without MTA-STS, email can be delivered over unencrypted connections (STARTTLS downgrade)",
+            "recommendation": f"Deploy MTA-STS: add _mta-sts TXT record and publish policy at .well-known/mta-sts.txt",
+        })
+
+    # --- TLS-RPT Record ---
+    tlsrpt_info = {"found": False}
+    if tlsrpt_txt and isinstance(tlsrpt_txt, list):
+        for rec in tlsrpt_txt:
+            txt = _extract_txt_value(rec)
+            if "v=tlsrptv1" in txt.lower():
+                tlsrpt_info = {"found": True, "record": txt.strip()}
+                for part in txt.split(";"):
+                    part = part.strip()
+                    if part.lower().startswith("rua="):
+                        tlsrpt_info["reporting_uri"] = part.split("=", 1)[1].strip()
+                break
+
+    if not tlsrpt_info["found"] and has_mx:
+        findings.append({
+            "severity": "LOW",
+            "finding": "No TLS-RPT (RFC 8460) record configured",
+            "detail": "Without TLS-RPT, you won't receive reports about TLS negotiation failures for inbound email",
+            "recommendation": f"Add a TXT record at _smtp._tls.{domain} with v=TLSRPTv1; rua=mailto:tls-reports@{domain}",
+        })
+
+    return json.dumps({
+        "domain": domain,
+        "has_mx": has_mx,
+        "mta_sts": {
+            "txt_record": sts_txt_info,
+            "policy": sts_policy_info,
+        },
+        "tls_rpt": tlsrpt_info,
+        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
+    }, default=str)
+
+
 SECURITY_TOOLS = [
     domain_reputation_check,
     zone_transfer_test,
+    mta_sts_check,
 ]

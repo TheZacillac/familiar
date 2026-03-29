@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from familiar.tools.security_tools import domain_reputation_check, zone_transfer_test
+from familiar.tools.security_tools import domain_reputation_check, mta_sts_check, zone_transfer_test
 
 
 class TestDomainReputationCheck:
@@ -79,3 +79,44 @@ class TestZoneTransferTest:
         result = json.loads(zone_transfer_test.invoke({"domain": "noname.com"}))
         assert result["vulnerable"] is False
         assert len(result["nameservers_tested"]) == 0
+
+
+class TestMtaStsCheck:
+    """Tests for the mta_sts_check tool."""
+
+    @patch("familiar.tools.security_tools._fetch_mta_sts_policy")
+    @patch("familiar.tools.security_tools.seer")
+    def test_full_mta_sts(self, mock_seer, mock_fetch):
+        def _dig(query, record_type="A", nameserver=None):
+            if "_mta-sts" in query:
+                return [{"data": {"text": "v=STSv1; id=20240101"}, "record_type": "TXT"}]
+            if "_smtp._tls" in query:
+                return [{"data": {"text": "v=TLSRPTv1; rua=mailto:tls@example.com"}, "record_type": "TXT"}]
+            if record_type == "MX":
+                return [{"data": {"exchange": "mail.example.com.", "preference": 10}, "record_type": "MX"}]
+            return []
+        mock_seer.dig.side_effect = _dig
+        mock_fetch.return_value = {
+            "success": True,
+            "policy": "version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 86400",
+        }
+        result = json.loads(mta_sts_check.invoke({"domain": "example.com"}))
+        assert result["domain"] == "example.com"
+        assert result["mta_sts"]["txt_record"]["found"] is True
+        assert result["mta_sts"]["policy"]["found"] is True
+        assert result["tls_rpt"]["found"] is True
+
+    @patch("familiar.tools.security_tools._fetch_mta_sts_policy")
+    @patch("familiar.tools.security_tools.seer")
+    def test_no_mta_sts(self, mock_seer, mock_fetch):
+        def _dig(query, record_type="A", nameserver=None):
+            if record_type == "MX":
+                return [{"data": {"exchange": "mail.no-sts.com.", "preference": 10}, "record_type": "MX"}]
+            return []
+        mock_seer.dig.side_effect = _dig
+        mock_fetch.return_value = {"success": False, "error": "404"}
+        result = json.loads(mta_sts_check.invoke({"domain": "no-sts.com"}))
+        assert result["mta_sts"]["txt_record"]["found"] is False
+        assert result["mta_sts"]["policy"]["found"] is False
+        assert result["tls_rpt"]["found"] is False
+        assert any(f["severity"] in ("MEDIUM", "LOW") for f in result["findings"])
