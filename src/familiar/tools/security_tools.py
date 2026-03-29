@@ -7,6 +7,8 @@ and website technology fingerprinting.
 
 import json
 import re
+import socket
+import struct
 
 import seer
 from langchain_core.tools import tool
@@ -136,6 +138,162 @@ def domain_reputation_check(domain: str) -> str:
     }, default=str)
 
 
+def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
+    """Attempt a DNS zone transfer (AXFR) against a single nameserver.
+
+    Uses raw TCP DNS protocol — constructs an AXFR query packet, connects to
+    the nameserver on port 53/TCP, and checks if the response contains zone data.
+    """
+    try:
+        # Build minimal DNS AXFR query
+        txn_id = 0xABCD
+        flags = 0x0000  # Standard query
+        header = struct.pack(">HHHHHH", txn_id, flags, 1, 0, 0, 0)
+
+        # Question section: encode domain name + QTYPE=AXFR(252) + QCLASS=IN(1)
+        question = b""
+        for label in domain.rstrip(".").split("."):
+            question += struct.pack("B", len(label)) + label.encode("ascii")
+        question += b"\x00"  # Root label
+        question += struct.pack(">HH", 252, 1)  # AXFR, IN
+
+        message = header + question
+        tcp_msg = struct.pack(">H", len(message)) + message
+
+        # Resolve nameserver hostname to IP first
+        try:
+            ns_ip = socket.getaddrinfo(nameserver.rstrip("."), 53, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+        except socket.gaierror:
+            return {"success": False, "error": f"Cannot resolve nameserver {nameserver}"}
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        try:
+            sock.connect((ns_ip, 53))
+            sock.sendall(tcp_msg)
+
+            length_data = sock.recv(2)
+            if len(length_data) < 2:
+                return {"success": False, "error": "No response from nameserver"}
+
+            resp_len = struct.unpack(">H", length_data)[0]
+            if resp_len < 12:
+                return {"success": False, "error": "Transfer refused or empty response"}
+
+            response = b""
+            while len(response) < resp_len:
+                chunk = sock.recv(min(4096, resp_len - len(response)))
+                if not chunk:
+                    break
+                response += chunk
+
+            if len(response) < 12:
+                return {"success": False, "error": "Incomplete response"}
+
+            _, resp_flags, _, ancount, _, _ = struct.unpack(">HHHHHH", response[:12])
+            rcode = resp_flags & 0x000F
+
+            if rcode in (5, 9):
+                return {"success": False, "error": "Transfer refused (RCODE={})".format(rcode)}
+
+            if rcode != 0:
+                return {"success": False, "error": f"DNS error RCODE={rcode}"}
+
+            if ancount > 0:
+                return {
+                    "success": True,
+                    "record_count": ancount,
+                    "response_size": len(response),
+                    "records_sample": [f"({ancount} records transferred — {len(response)} bytes)"],
+                }
+
+            return {"success": False, "error": "No records in response"}
+
+        finally:
+            sock.close()
+
+    except socket.timeout:
+        return {"success": False, "error": "Connection timed out"}
+    except ConnectionRefusedError:
+        return {"success": False, "error": "Connection refused (port 53/TCP closed)"}
+    except OSError as e:
+        return {"success": False, "error": f"Network error: {e}"}
+
+
+def _extract_nameserver(record) -> str:
+    """Extract nameserver hostname from a seer dig NS record."""
+    if isinstance(record, dict):
+        data = record.get("data", record)
+        if isinstance(data, dict):
+            return data.get("nameserver", "").rstrip(".")
+        return str(data).rstrip(".")
+    return str(record).rstrip(".")
+
+
+@tool
+def zone_transfer_test(domain: str) -> str:
+    """Test whether a domain's nameservers allow unauthorized DNS zone transfers
+    (AXFR). Zone transfers that succeed from arbitrary sources expose the entire
+    DNS zone contents — a critical security finding in any pentest."""
+    domain = domain.lower().strip()
+
+    # Get nameservers
+    ns_records = safe_call(seer.dig, domain, "NS") or []
+    nameservers = []
+    for rec in (ns_records if isinstance(ns_records, list) else []):
+        ns = _extract_nameserver(rec)
+        if ns:
+            nameservers.append(ns)
+
+    if not nameservers:
+        return json.dumps({
+            "domain": domain,
+            "vulnerable": False,
+            "nameservers_tested": [],
+            "results": [],
+            "findings": [],
+            "note": "No nameservers found for this domain",
+        }, default=str)
+
+    # Test each nameserver (max 4)
+    test_ns = nameservers[:4]
+    results = []
+    findings = []
+    vulnerable = False
+
+    for ns in test_ns:
+        axfr_result = _attempt_axfr(ns, domain)
+        result_entry = {
+            "nameserver": ns,
+            "axfr_allowed": axfr_result["success"],
+        }
+        if axfr_result["success"]:
+            vulnerable = True
+            result_entry["record_count"] = axfr_result.get("record_count", 0)
+            result_entry["response_size"] = axfr_result.get("response_size", 0)
+            findings.append({
+                "severity": "CRITICAL",
+                "finding": f"Zone transfer (AXFR) allowed on {ns}",
+                "detail": f"Nameserver {ns} returned {axfr_result.get('record_count', '?')} records — "
+                          "entire zone contents exposed to unauthenticated queries",
+                "recommendation": f"Restrict AXFR on {ns} to authorized secondary nameservers only "
+                                  "(allow-transfer ACL in BIND, xfr-out in Knot, etc.)",
+            })
+        else:
+            result_entry["status"] = axfr_result.get("error", "refused")
+
+        results.append(result_entry)
+
+    return json.dumps({
+        "domain": domain,
+        "vulnerable": vulnerable,
+        "nameservers_tested": test_ns,
+        "results": results,
+        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
+    }, default=str)
+
+
 SECURITY_TOOLS = [
     domain_reputation_check,
+    zone_transfer_test,
 ]
