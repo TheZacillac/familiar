@@ -7,7 +7,119 @@ import seer
 import tome
 from langchain_core.tools import tool
 
-from ..utils import days_until as _days_until, safe_call
+from ..utils import days_until as _days_until, parallel_calls, safe_call
+
+
+def _unwrap_bulk(raw) -> dict | list | None:
+    """Unwrap a seer BulkResult wrapper to extract the inner payload.
+
+    seer.bulk_* APIs return Vec<BulkResult> where each element is:
+        {operation: {...}, success: bool, data: <payload>, error: str|None, duration_ms: int}
+
+    Returns the ``data`` value when the result indicates success, or None otherwise.
+    """
+    if raw and isinstance(raw, dict) and raw.get("success"):
+        return raw.get("data")
+    return None
+
+
+def _get_cert(status_data) -> dict:
+    """Extract the certificate dict from a seer.status() response.
+
+    seer.status() returns {certificate: {is_valid, days_until_expiry, ...}}.
+    Returns an empty dict if not available.
+    """
+    if status_data and isinstance(status_data, dict):
+        cert = status_data.get("certificate")
+        if cert and isinstance(cert, dict):
+            return cert
+    return {}
+
+
+def _extract_registration(lookup_result) -> dict:
+    """Normalize a seer.lookup() result into a flat registration dict.
+
+    seer.lookup() returns a tagged enum: {source: "whois"/"rdap", data: {...}}.
+    For WHOIS, data contains registrar, creation_date, expiration_date, etc.
+    For RDAP, data uses RFC 7483 structure (events, entities, camelCase).
+    This function normalizes both into a common flat dict.
+    """
+    if not lookup_result or not isinstance(lookup_result, dict):
+        return {}
+
+    source = lookup_result.get("source", "")
+    data = lookup_result.get("data")
+    if not data or not isinstance(data, dict):
+        return {"source": source}
+
+    if source == "whois":
+        return {
+            "source": "whois",
+            "domain": data.get("domain"),
+            "registrar": data.get("registrar"),
+            "registrant": data.get("registrant"),
+            "organization": data.get("organization"),
+            "creation_date": data.get("creation_date"),
+            "expiration_date": data.get("expiration_date"),
+            "updated_date": data.get("updated_date"),
+            "nameservers": data.get("nameservers", []),
+            "statuses": data.get("status", []),
+            "dnssec": data.get("dnssec"),
+        }
+
+    if source == "rdap":
+        reg = {
+            "source": "rdap",
+            "domain": data.get("ldhName") or data.get("unicodeName"),
+            "nameservers": [],
+            "statuses": data.get("status", []),
+        }
+        # Extract dates from RDAP events
+        for event in data.get("events", []):
+            action = event.get("eventAction", "")
+            date = event.get("eventDate")
+            if action == "registration":
+                reg["creation_date"] = date
+            elif action == "expiration":
+                reg["expiration_date"] = date
+            elif action in ("last changed", "last update of RDAP database"):
+                reg.setdefault("updated_date", date)
+        # Extract registrar from entities
+        for entity in data.get("entities", []):
+            roles = entity.get("roles", [])
+            if "registrar" in roles:
+                # Try vcardArray first, fall back to handle
+                vcard = entity.get("vcardArray")
+                if vcard and isinstance(vcard, list) and len(vcard) > 1:
+                    for item in vcard[1]:
+                        if isinstance(item, list) and len(item) >= 4 and item[0] == "fn":
+                            reg["registrar"] = item[3]
+                            break
+                if "registrar" not in reg:
+                    reg["registrar"] = entity.get("handle")
+        # Extract nameservers
+        for ns in data.get("nameservers", []):
+            if isinstance(ns, dict):
+                name = ns.get("ldhName", "")
+                if name:
+                    reg["nameservers"].append(name)
+        # DNSSEC
+        secure_dns = data.get("secureDNS") or data.get("secureDns")
+        if secure_dns and isinstance(secure_dns, dict):
+            reg["dnssec"] = "yes" if secure_dns.get("delegationSigned") else "unsigned"
+        # Also check for whois_fallback data
+        fallback = lookup_result.get("whois_fallback")
+        if fallback and isinstance(fallback, dict):
+            if not reg.get("registrar"):
+                reg["registrar"] = fallback.get("registrar")
+            if not reg.get("expiration_date"):
+                reg["expiration_date"] = fallback.get("expiration_date")
+            if not reg.get("creation_date"):
+                reg["creation_date"] = fallback.get("creation_date")
+        return reg
+
+    # Available variant or unknown source
+    return {"source": source}
 
 # Known multi-level TLD suffixes for correct SLD extraction
 _MULTI_LEVEL_TLDS = frozenset({
@@ -161,29 +273,30 @@ def appraise_domain(domain: str) -> str:
     domain = domain.lower().strip()
 
     name_analysis = _domain_name_analysis(domain)
-
-    # Registration data
-    whois_data = safe_call(seer.lookup, domain)
-
-    # DNS footprint — check all major record types
-    dns_records = {}
-    for rtype in ("A", "AAAA", "MX", "NS", "TXT", "CNAME", "CAA", "SOA"):
-        result = safe_call(seer.dig, domain, rtype)
-        if result:
-            dns_records[rtype] = result
-
-    # Web & SSL status
-    status_data = safe_call(seer.status, domain)
-
-    # TLD reference info
     tld = name_analysis["tld"]
-    tld_info = safe_call(tome.tld_lookup, tld) if tld else None
+
+    # Fan out all independent network calls concurrently
+    rtypes = ("A", "AAAA", "MX", "NS", "TXT", "CNAME", "CAA", "SOA")
+    call_specs = (
+        [(seer.dig, domain, rt) for rt in rtypes]
+        + [(seer.lookup, domain), (seer.status, domain)]
+        + ([(tome.tld_lookup, tld)] if tld else [])
+    )
+    results = parallel_calls(*call_specs)
+
+    dns_records = {}
+    for i, rtype in enumerate(rtypes):
+        if results[i]:
+            dns_records[rtype] = results[i]
+    whois_data = _extract_registration(results[len(rtypes)])
+    status_data = results[len(rtypes) + 1]
+    tld_info = results[len(rtypes) + 2] if tld else None
 
     # Derive valuation signals
     signals = {}
 
     if whois_data and isinstance(whois_data, dict):
-        created = whois_data.get("created") or whois_data.get("creation_date")
+        created = whois_data.get("creation_date")
         if created:
             signals["registration_date"] = str(created)[:10]
             age_days = _days_until(created)
@@ -191,14 +304,14 @@ def appraise_domain(domain: str) -> str:
                 # age_days is negative because the date is in the past
                 signals["age_years"] = round(-age_days / 365.25, 1)
 
-        expiry = whois_data.get("expiry") or whois_data.get("expiration_date")
+        expiry = whois_data.get("expiration_date")
         if expiry:
             signals["expiration_date"] = str(expiry)[:10]
             expiry_days = _days_until(expiry)
             if expiry_days is not None:
                 signals["years_until_expiry"] = round(expiry_days / 365.25, 1)
 
-        updated = whois_data.get("updated") or whois_data.get("last_updated")
+        updated = whois_data.get("updated_date")
         if updated:
             signals["last_updated"] = str(updated)[:10]
 
@@ -218,13 +331,15 @@ def appraise_domain(domain: str) -> str:
     signals["total_dns_records"] = record_count
     signals["has_email_infrastructure"] = bool(dns_records.get("MX"))
     signals["has_spf"] = any(
-        "v=spf1" in str(r).lower() for r in (dns_records.get("TXT") or [])
+        "v=spf1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
+        for r in (dns_records.get("TXT") or [])
     )
 
     if status_data and isinstance(status_data, dict):
         signals["http_accessible"] = status_data.get("http_status") is not None
-        signals["has_ssl"] = status_data.get("ssl_valid", False)
-        signals["ssl_expiry"] = status_data.get("ssl_expiry")
+        cert = _get_cert(status_data)
+        signals["has_ssl"] = cert.get("is_valid", False)
+        signals["ssl_expiry"] = cert.get("valid_until")
 
     return json.dumps({
         "domain": domain,
@@ -244,12 +359,15 @@ def plan_acquisition(domain: str) -> str:
     for forming an acquisition approach."""
     domain = domain.lower().strip()
 
-    whois_data = safe_call(seer.lookup, domain)
-    status_data = safe_call(seer.status, domain)
-    dns_a = safe_call(seer.dig, domain, "A")
-    dns_ns = safe_call(seer.dig, domain, "NS")
-    dns_mx = safe_call(seer.dig, domain, "MX")
     name_analysis = _domain_name_analysis(domain)
+    lookup_raw, status_data, dns_a, dns_ns, dns_mx = parallel_calls(
+        (seer.lookup, domain),
+        (seer.status, domain),
+        (seer.dig, domain, "A"),
+        (seer.dig, domain, "NS"),
+        (seer.dig, domain, "MX"),
+    )
+    whois_data = _extract_registration(lookup_raw)
 
     acquisition_intel = {
         "is_registered": False,
@@ -264,29 +382,30 @@ def plan_acquisition(domain: str) -> str:
     if whois_data and isinstance(whois_data, dict) and not whois_data.get("error"):
         acquisition_intel["is_registered"] = True
         acquisition_intel["registrar"] = whois_data.get("registrar")
-        statuses = whois_data.get("status") or whois_data.get("statuses") or []
+        statuses = whois_data.get("statuses") or []
         if isinstance(statuses, str):
             statuses = [statuses]
         acquisition_intel["epp_statuses"] = statuses
         acquisition_intel["epp_classification"] = _classify_epp_statuses(statuses)
         acquisition_intel["expiry_date"] = str(
-            whois_data.get("expiry") or whois_data.get("expiration_date") or ""
+            whois_data.get("expiration_date") or ""
         )
 
-    # Parking heuristics
-    if status_data and isinstance(status_data, dict):
-        http_status = status_data.get("http_status")
-        if http_status in (301, 302, 303, 307, 308):
-            acquisition_intel["parking_indicators"].append("redirecting")
-    if not dns_mx:
-        acquisition_intel["parking_indicators"].append("no_email_configured")
+    # Parking heuristics (only meaningful for registered domains)
+    if acquisition_intel["is_registered"]:
+        if status_data and isinstance(status_data, dict):
+            http_status = status_data.get("http_status")
+            if http_status in (301, 302, 303, 307, 308):
+                acquisition_intel["parking_indicators"].append("redirecting")
+        if not dns_mx:
+            acquisition_intel["parking_indicators"].append("no_email_configured")
 
     # Active use heuristics
     if dns_a:
         acquisition_intel["active_use_indicators"].append("has_a_record")
     if dns_mx:
         acquisition_intel["active_use_indicators"].append("has_email")
-    if status_data and isinstance(status_data, dict) and status_data.get("ssl_valid"):
+    if _get_cert(status_data).get("is_valid"):
         acquisition_intel["active_use_indicators"].append("has_valid_ssl")
 
     # Deterministic acquisition difficulty score
@@ -404,26 +523,31 @@ _TRANSIENT_ERROR_PATTERNS = (
 def _is_registered(result) -> bool | None:
     """Determine if a lookup result indicates a registered domain.
 
-    Returns True if registered, False if clearly available (not-found error),
-    None if the lookup failed or the result is ambiguous (transient errors,
-    rate limiting, timeouts, etc.).
+    seer.lookup / bulk_lookup returns a tagged enum: {source: "rdap"/"whois"/"available"}.
+    - "rdap" or "whois" source → registered
+    - "available" source → not registered
+    - error / None → ambiguous
+
+    Returns True if registered, False if clearly available, None if ambiguous.
     """
     if result is None:
         return None
     if not isinstance(result, dict):
         return None
-    error = result.get("error")
-    if not error:
-        # Clean non-error response means registered
+    # Handle the seer LookupResult tagged enum
+    source = result.get("source")
+    if source in ("rdap", "whois"):
         return True
-    error_lower = str(error).lower()
-    # Transient errors are ambiguous — don't assume available
-    if any(p in error_lower for p in _TRANSIENT_ERROR_PATTERNS):
-        return None
-    # "Not found" patterns mean the domain is genuinely available
-    if any(p in error_lower for p in _NOT_FOUND_PATTERNS):
+    if source == "available":
         return False
-    # Unknown error type — treat as ambiguous rather than available
+    # Fallback for error responses or unexpected formats
+    error = result.get("error")
+    if error:
+        error_lower = str(error).lower()
+        if any(p in error_lower for p in _TRANSIENT_ERROR_PATTERNS):
+            return None
+        if any(p in error_lower for p in _NOT_FOUND_PATTERNS):
+            return False
     return None
 
 
@@ -433,6 +557,8 @@ def suggest_domains(brand: str, keywords: str = "", tlds: str = "") -> str:
     the brand name and optional keywords, checks availability across popular TLDs, and
     returns scored candidates. Pass comma-separated keywords and/or TLDs to customize."""
     brand = brand.lower().strip().replace(" ", "")
+    if not brand:
+        return json.dumps({"error": "Brand name cannot be empty"})
     keyword_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
 
     if tlds:
@@ -470,7 +596,8 @@ def suggest_domains(brand: str, keywords: str = "", tlds: str = "") -> str:
     taken = []
     unknown = []
     for i, domain in enumerate(all_domains):
-        result = results_raw[i] if i < len(results_raw) else None
+        raw = results_raw[i] if i < len(results_raw) else None
+        result = _unwrap_bulk(raw) if raw and isinstance(raw, dict) and "operation" in raw else raw
         registered = _is_registered(result)
         name_info = _domain_name_analysis(domain)
         entry = {
@@ -515,13 +642,18 @@ def audit_portfolio(domains: str) -> str:
         return json.dumps({"error": "Maximum 100 domains per audit"})
 
     # Bulk data gathering — all concurrent
-    bulk_lookup = safe_call(seer.bulk_lookup, domain_list) or [None] * len(domain_list)
-    bulk_status = safe_call(seer.bulk_status, domain_list) or [None] * len(domain_list)
-    txt_bulk = safe_call(seer.bulk_dig, domain_list, "TXT") or [None] * len(domain_list)
-    mx_bulk = safe_call(seer.bulk_dig, domain_list, "MX") or [None] * len(domain_list)
-    ns_bulk = safe_call(seer.bulk_dig, domain_list, "NS") or [None] * len(domain_list)
     dmarc_domains = [f"_dmarc.{d}" for d in domain_list]
-    dmarc_bulk = safe_call(seer.bulk_dig, dmarc_domains, "TXT") or [None] * len(domain_list)
+    _none_list = [None] * len(domain_list)
+    (bulk_lookup, bulk_status, txt_bulk, mx_bulk, ns_bulk, dmarc_bulk) = [
+        r or _none_list for r in parallel_calls(
+            (seer.bulk_lookup, domain_list),
+            (seer.bulk_status, domain_list),
+            (seer.bulk_dig, domain_list, "TXT"),
+            (seer.bulk_dig, domain_list, "MX"),
+            (seer.bulk_dig, domain_list, "NS"),
+            (seer.bulk_dig, dmarc_domains, "TXT"),
+        )
+    ]
 
     portfolio = []
     registrars = {}
@@ -534,14 +666,16 @@ def audit_portfolio(domains: str) -> str:
     for i, domain in enumerate(domain_list):
         entry = {"domain": domain, "issues": [], "strengths": []}
 
-        # Registration analysis
-        reg = bulk_lookup[i] if i < len(bulk_lookup) else None
-        if reg and isinstance(reg, dict) and not reg.get("error"):
+        # Registration analysis — unwrap BulkResult, then normalize via _extract_registration
+        raw_lookup = bulk_lookup[i] if i < len(bulk_lookup) else None
+        lookup_data = _unwrap_bulk(raw_lookup)
+        reg = _extract_registration(lookup_data)
+        if reg and reg.get("source"):
             registrar = reg.get("registrar", "unknown")
             entry["registrar"] = registrar
             registrars[registrar] = registrars.get(registrar, 0) + 1
 
-            expiry = reg.get("expiry") or reg.get("expiration_date")
+            expiry = reg.get("expiration_date")
             if expiry:
                 entry["expiry"] = str(expiry)
                 days_left = _days_until(expiry)
@@ -575,35 +709,50 @@ def audit_portfolio(domains: str) -> str:
             else:
                 dnssec_status["unknown"] += 1
 
-        # HTTP/SSL analysis
-        st = bulk_status[i] if i < len(bulk_status) else None
+        # HTTP/SSL analysis — unwrap BulkResult
+        raw_status = bulk_status[i] if i < len(bulk_status) else None
+        st = _unwrap_bulk(raw_status)
         if st and isinstance(st, dict):
-            if not st.get("ssl_valid", False):
+            cert = _get_cert(st)
+            if not cert.get("is_valid", False):
                 entry["issues"].append("SSL certificate invalid or missing")
                 ssl_issues.append(domain)
             else:
                 entry["strengths"].append("Valid SSL certificate")
             entry["http_status"] = st.get("http_status")
-            entry["ssl_valid"] = st.get("ssl_valid")
-            entry["ssl_expiry"] = str(st.get("ssl_expiry", ""))
+            entry["ssl_valid"] = cert.get("is_valid", False)
+            entry["ssl_expiry"] = str(cert.get("valid_until", ""))
 
-        # Email authentication checks (from bulk results)
-        txt_records = txt_bulk[i] if i < len(txt_bulk) else None
-        mx_records = mx_bulk[i] if i < len(mx_bulk) else None
-        ns_records = ns_bulk[i] if i < len(ns_bulk) else None
-        dmarc_records = dmarc_bulk[i] if i < len(dmarc_bulk) else None
+        # Email authentication checks (from bulk results) — unwrap BulkResult
+        raw_txt = txt_bulk[i] if i < len(txt_bulk) else None
+        txt_records = _unwrap_bulk(raw_txt)
+        raw_mx = mx_bulk[i] if i < len(mx_bulk) else None
+        mx_records = _unwrap_bulk(raw_mx)
+        raw_ns = ns_bulk[i] if i < len(ns_bulk) else None
+        ns_records = _unwrap_bulk(raw_ns)
+        raw_dmarc = dmarc_bulk[i] if i < len(dmarc_bulk) else None
+        dmarc_records = _unwrap_bulk(raw_dmarc)
 
         if ns_records and isinstance(ns_records, list):
-            ns_key = str(sorted(str(r) for r in ns_records))
+            ns_key = str(sorted(
+                r.get("data", {}).get("nameserver", str(r)) if isinstance(r, dict) else str(r)
+                for r in ns_records
+            ))
             nameserver_sets[ns_key] = nameserver_sets.get(ns_key, 0) + 1
 
         has_spf = False
         if txt_records and isinstance(txt_records, list):
-            has_spf = any("v=spf1" in str(r).lower() for r in txt_records)
+            has_spf = any(
+                "v=spf1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
+                for r in txt_records
+            )
 
         has_dmarc = False
         if dmarc_records and isinstance(dmarc_records, list):
-            has_dmarc = any("v=dmarc1" in str(r).lower() for r in dmarc_records)
+            has_dmarc = any(
+                "v=dmarc1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
+                for r in dmarc_records
+            )
 
         if mx_records:
             if not has_spf:
@@ -650,7 +799,8 @@ def competitive_intel(domain: str) -> str:
 
     variants = {}
     for i, variant in enumerate(variant_domains):
-        result = variant_results[i] if i < len(variant_results) else None
+        raw = variant_results[i] if i < len(variant_results) else None
+        result = _unwrap_bulk(raw) if raw and isinstance(raw, dict) and "operation" in raw else raw
         registered = _is_registered(result)
         variants[variant] = {
             "registered": registered is True,
@@ -658,20 +808,24 @@ def competitive_intel(domain: str) -> str:
                 "available" if registered is False else "unknown"
             ),
             "registrar": (
-                result.get("registrar")
-                if registered is True and isinstance(result, dict) else None
+                _extract_registration(result).get("registrar")
+                if registered is True else None
             ),
         }
 
-    # Primary domain deep analysis
-    primary_lookup = safe_call(seer.lookup, domain)
+    # Primary domain deep analysis — fan out all calls concurrently
+    ci_rtypes = ("NS", "MX", "A", "AAAA", "TXT", "CNAME", "CAA")
+    ci_results = parallel_calls(
+        *[(seer.dig, domain, rt) for rt in ci_rtypes],
+        (seer.lookup, domain),
+        (seer.status, domain),
+    )
     dns_data = {}
-    for rtype in ("NS", "MX", "A", "AAAA", "TXT", "CNAME", "CAA"):
-        result = safe_call(seer.dig, domain, rtype)
-        if result:
-            dns_data[rtype] = result
-
-    status_data = safe_call(seer.status, domain)
+    for i, rtype in enumerate(ci_rtypes):
+        if ci_results[i]:
+            dns_data[rtype] = ci_results[i]
+    primary_lookup = _extract_registration(ci_results[len(ci_rtypes)])
+    status_data = ci_results[len(ci_rtypes) + 1]
 
     return json.dumps({
         "target": domain,
@@ -682,6 +836,9 @@ def competitive_intel(domain: str) -> str:
         "variants_registered": sum(1 for v in variants.values() if v["registered"]),
         "variants_available": sum(
             1 for v in variants.values() if v["status"] == "available"
+        ),
+        "variants_unknown": sum(
+            1 for v in variants.values() if v["status"] == "unknown"
         ),
     }, default=str)
 
@@ -697,23 +854,26 @@ def migration_preflight(domain: str, target_nameservers: str = "") -> str:
         if target_nameservers else []
     )
 
-    whois_data = safe_call(seer.lookup, domain)
-
-    # Full DNS snapshot
+    # Fan out all independent lookups concurrently
+    mp_rtypes = ("A", "AAAA", "MX", "NS", "TXT", "CNAME", "CAA", "SRV", "SOA")
+    mp_results = parallel_calls(
+        *[(seer.dig, domain, rt) for rt in mp_rtypes],
+        (seer.lookup, domain),
+        (seer.status, domain),
+    )
     dns_snapshot = {}
-    for rtype in ("A", "AAAA", "MX", "NS", "TXT", "CNAME", "CAA", "SRV", "SOA"):
-        result = safe_call(seer.dig, domain, rtype)
-        if result:
-            dns_snapshot[rtype] = result
-
-    status_data = safe_call(seer.status, domain)
+    for i, rtype in enumerate(mp_rtypes):
+        if mp_results[i]:
+            dns_snapshot[rtype] = mp_results[i]
+    whois_data = _extract_registration(mp_results[len(mp_rtypes)])
+    status_data = mp_results[len(mp_rtypes) + 1]
 
     # Build migration checklist
     checklist = []
     migration_warnings = []
 
     if whois_data and isinstance(whois_data, dict) and not whois_data.get("error"):
-        statuses = whois_data.get("status") or whois_data.get("statuses") or []
+        statuses = whois_data.get("statuses") or []
         if isinstance(statuses, str):
             statuses = [statuses]
         epp = _classify_epp_statuses(statuses)
@@ -743,7 +903,7 @@ def migration_preflight(domain: str, target_nameservers: str = "") -> str:
             "detail": f"Request transfer authorization code from {registrar}",
         })
 
-        expiry = whois_data.get("expiry") or whois_data.get("expiration_date")
+        expiry = whois_data.get("expiration_date")
         if expiry:
             days_left = _days_until(expiry)
             if days_left is not None:
@@ -804,13 +964,14 @@ def migration_preflight(domain: str, target_nameservers: str = "") -> str:
         "detail": "Use seer_propagation to confirm DNS changes have propagated globally",
     })
 
-    # Validate target nameservers if provided
+    # Validate target nameservers if provided (concurrently)
     ns_validation = None
     if target_ns:
-        ns_validation = {}
-        for ns in target_ns:
-            a_result = safe_call(seer.dig, ns, "A")
-            ns_validation[ns] = {"resolves": bool(a_result), "addresses": a_result}
+        ns_a_results = parallel_calls(*[(seer.dig, ns, "A") for ns in target_ns])
+        ns_validation = {
+            ns: {"resolves": bool(r), "addresses": r}
+            for ns, r in zip(target_ns, ns_a_results)
+        }
 
     return json.dumps({
         "domain": domain,
@@ -844,36 +1005,53 @@ def security_audit(domain: str) -> str:
     configuration."""
     domain = domain.lower().strip()
 
+    # Fan out all independent network calls concurrently
+    ssl_data, dnssec_data, txt_records, dmarc_records, mx_records, status_data = parallel_calls(
+        (seer.ssl, domain),
+        (seer.dnssec, domain),
+        (seer.dig, domain, "TXT"),
+        (seer.dig, "_dmarc." + domain, "TXT"),
+        (seer.dig, domain, "MX"),
+        (seer.status, domain),
+    )
+
     # SSL certificate analysis
-    ssl_data = safe_call(seer.ssl, domain)
     ssl_health = {"status": "unknown"}
     if ssl_data and isinstance(ssl_data, dict):
+        # SslReport: is_valid, days_until_expiry, chain[], san_names[], protocol_version
+        # CertDetail (chain[0]): issuer, subject, valid_from, valid_until, key_type, key_bits
+        leaf = {}
+        chain = ssl_data.get("chain", [])
+        if chain and isinstance(chain, list) and len(chain) > 0:
+            leaf = chain[0] if isinstance(chain[0], dict) else {}
         ssl_health = {
-            "valid": ssl_data.get("valid", False),
-            "issuer": ssl_data.get("issuer"),
-            "expiry": ssl_data.get("not_after") or ssl_data.get("expiry"),
-            "sans": ssl_data.get("sans") or ssl_data.get("subject_alt_names"),
-            "protocol": ssl_data.get("protocol") or ssl_data.get("tls_version"),
+            "valid": ssl_data.get("is_valid", False),
+            "issuer": leaf.get("issuer"),
+            "expiry": leaf.get("valid_until"),
+            "sans": ssl_data.get("san_names"),
+            "protocol": ssl_data.get("protocol_version"),
         }
+        is_valid = ssl_health.get("valid", False)
         if ssl_health.get("expiry"):
             days_left = _days_until(ssl_health["expiry"])
             if days_left is not None:
                 ssl_health["days_until_expiry"] = days_left
-                if days_left < 7:
+                if not is_valid:
+                    ssl_health["status"] = "critical"
+                elif days_left < 7:
                     ssl_health["status"] = "critical"
                 elif days_left < 30:
                     ssl_health["status"] = "warning"
                 else:
                     ssl_health["status"] = "healthy"
             else:
-                ssl_health["status"] = "healthy" if ssl_health.get("valid") else "critical"
+                ssl_health["status"] = "healthy" if is_valid else "critical"
         else:
-            ssl_health["status"] = "healthy" if ssl_health.get("valid") else "critical"
+            ssl_health["status"] = "healthy" if is_valid else "critical"
     elif ssl_data is None:
         ssl_health = {"status": "critical", "error": "Could not retrieve SSL certificate"}
 
-    # DNSSEC status
-    dnssec_data = safe_call(seer.dnssec, domain)
+    # DNSSEC status (dnssec_data already fetched above)
     dnssec_status = {"status": "unknown"}
     if dnssec_data and isinstance(dnssec_data, dict):
         dnssec_status = {
@@ -890,10 +1068,7 @@ def security_audit(domain: str) -> str:
         dnssec_status = {"status": "unknown", "error": "Could not check DNSSEC"}
 
     # Email security: SPF, DMARC, DKIM indicators
-    txt_records = safe_call(seer.dig, domain, "TXT")
-    dmarc_records = safe_call(seer.dig, "_dmarc." + domain, "TXT")
-    mx_records = safe_call(seer.dig, domain, "MX")
-
+    # (txt_records, dmarc_records, mx_records already fetched above)
     email_security = {
         "has_mx": bool(mx_records),
         "spf": {"found": False},
@@ -903,9 +1078,10 @@ def security_audit(domain: str) -> str:
 
     if txt_records and isinstance(txt_records, list):
         for record in txt_records:
-            record_str = str(record).lower()
+            record_text = record.get("data", {}).get("text", "") if isinstance(record, dict) else str(record)
+            record_str = record_text.lower()
             if "v=spf1" in record_str:
-                email_security["spf"] = {"found": True, "record": str(record)}
+                email_security["spf"] = {"found": True, "record": record_text}
                 # Check for common SPF issues
                 if "-all" in record_str:
                     email_security["spf"]["policy"] = "strict"
@@ -918,9 +1094,10 @@ def security_audit(domain: str) -> str:
 
     if dmarc_records and isinstance(dmarc_records, list):
         for record in dmarc_records:
-            record_str = str(record).lower()
+            record_text = record.get("data", {}).get("text", "") if isinstance(record, dict) else str(record)
+            record_str = record_text.lower()
             if "v=dmarc1" in record_str:
-                email_security["dmarc"] = {"found": True, "record": str(record)}
+                email_security["dmarc"] = {"found": True, "record": record_text}
                 if "p=reject" in record_str:
                     email_security["dmarc"]["policy"] = "reject"
                 elif "p=quarantine" in record_str:
@@ -928,16 +1105,15 @@ def security_audit(domain: str) -> str:
                 elif "p=none" in record_str:
                     email_security["dmarc"]["policy"] = "none_MONITORING_ONLY"
 
-    # HTTP security check via status
-    status_data = safe_call(seer.status, domain)
+    # HTTP security check via status (status_data already fetched above)
     http_security = {"status": "unknown"}
     if status_data and isinstance(status_data, dict):
+        status_cert = _get_cert(status_data)
+        status_ssl_valid = status_cert.get("is_valid", False)
         http_security = {
             "http_status": status_data.get("http_status"),
-            "ssl_valid": status_data.get("ssl_valid", False),
-            "redirects_to_https": status_data.get("final_url", "").startswith("https://")
-            if status_data.get("final_url") else None,
-            "status": "healthy" if status_data.get("ssl_valid") else "warning",
+            "ssl_valid": status_ssl_valid,
+            "status": "healthy" if status_ssl_valid else "warning",
         }
 
     # Compile recommendations
@@ -969,13 +1145,10 @@ def security_audit(domain: str) -> str:
             recommendations.append("Consider upgrading DMARC policy from 'none' to 'quarantine' or 'reject'")
             risk_score += 1
 
-    if http_security.get("redirects_to_https") is False:
-        recommendations.append("Configure HTTP to HTTPS redirect for all traffic")
-        risk_score += 1
-
-    # Only penalize SSL via http_security if we actually got status data back
-    # (ssl_health already penalizes for missing/invalid SSL independently)
-    if status_data is not None and not http_security.get("ssl_valid"):
+    # Only penalize SSL via http_security if ssl_health hasn't already penalized
+    if (status_data is not None
+            and not http_security.get("ssl_valid")
+            and ssl_health.get("status") not in ("critical", "warning")):
         risk_score += 1
 
     # Determine overall risk rating
@@ -1065,23 +1238,31 @@ def brand_protection_scan(brand: str, primary_domain: str) -> str:
     key_tlds = ["com", "net", "org", "io", "co"]
     tld_domains = [f"{brand}.{tld}" for tld in key_tlds]
 
-    # Check availability of typo domains
+    # Check all availability + subdomains concurrently
+    all_check_domains = typo_domains + tld_domains
+    avail_results = parallel_calls(
+        *[(seer.availability, d) for d in all_check_domains],
+        (seer.subdomains, primary_domain),
+    )
+    subdomain_data = avail_results[-1]
+
+    # Split results back into typo vs TLD groups
     available_variants = []
     taken_variants = []
-    for td in typo_domains:
-        result = safe_call(seer.availability, td)
+    check_failed = []
+    for i, td in enumerate(typo_domains):
+        result = avail_results[i]
         if result and isinstance(result, dict):
             if result.get("available", False):
                 available_variants.append({"domain": td, "status": "available"})
             else:
                 taken_variants.append({"domain": td, "status": "taken", "details": result})
         else:
-            taken_variants.append({"domain": td, "status": "unknown"})
+            check_failed.append({"domain": td, "status": "unknown", "reason": "availability check failed"})
 
-    # Check TLD coverage
     tld_coverage = {}
-    for td in tld_domains:
-        result = safe_call(seer.availability, td)
+    for i, td in enumerate(tld_domains):
+        result = avail_results[len(typo_domains) + i]
         if result and isinstance(result, dict):
             tld_coverage[td] = {
                 "available": result.get("available", False),
@@ -1089,9 +1270,6 @@ def brand_protection_scan(brand: str, primary_domain: str) -> str:
             }
         else:
             tld_coverage[td] = {"available": None, "status": "unknown"}
-
-    # Subdomain exposure via CT logs
-    subdomain_data = safe_call(seer.subdomains, primary_domain)
     subdomain_exposure = {"count": 0, "subdomains": []}
     if subdomain_data and isinstance(subdomain_data, dict):
         subs = subdomain_data.get("subdomains") or subdomain_data.get("results") or []
@@ -1111,11 +1289,14 @@ def brand_protection_scan(brand: str, primary_domain: str) -> str:
         "typo_variants_checked": len(typo_domains),
         "available_variants": available_variants,
         "taken_variants": taken_variants,
+        "check_failed": check_failed,
         "tld_coverage": tld_coverage,
         "subdomain_exposure": subdomain_exposure,
         "recommendations": [
             f"Register {len(available_variants)} available typosquatting variants for defensive protection"
-            if available_variants else "No immediate typosquatting variants available to register",
+            + (f" ({len(check_failed)} variants could not be checked)" if check_failed else "")
+            if available_variants or check_failed
+            else "No immediate typosquatting variants available to register",
             f"{subdomain_exposure['count']} subdomains exposed via Certificate Transparency logs"
             if subdomain_exposure["count"] > 0 else "No subdomain exposure detected via CT logs",
         ],
@@ -1128,28 +1309,28 @@ def dns_health_check(domain: str) -> str:
     nameserver comparison, and best practice compliance."""
     domain = domain.lower().strip()
 
-    # Check essential record types
+    # Check essential record types + propagation concurrently
     essential_types = ["A", "AAAA", "MX", "NS", "SOA", "TXT", "CAA"]
+    dhc_results = parallel_calls(
+        *[(seer.dig, domain, rt) for rt in essential_types],
+        (seer.propagation, domain, "A"),
+    )
     records_found = {}
     records_missing = []
-
-    for rtype in essential_types:
-        result = safe_call(seer.dig, domain, rtype)
-        if result:
-            records_found[rtype] = result
+    for i, rtype in enumerate(essential_types):
+        if dhc_results[i]:
+            records_found[rtype] = dhc_results[i]
         else:
             records_missing.append(rtype)
-
-    # Propagation check for A records
-    propagation_status = safe_call(seer.propagation, domain, "A")
+    propagation_status = dhc_results[len(essential_types)]
 
     # Nameserver consistency check
     nameserver_consistency = None
     ns_records = records_found.get("NS")
     if ns_records and isinstance(ns_records, list) and len(ns_records) >= 2:
-        ns_a = str(ns_records[0]).rstrip(".")
-        ns_b = str(ns_records[1]).rstrip(".")
-        compare_result = safe_call(seer.dns_compare, domain, "A", ns_a, ns_b)
+        ns_a = (ns_records[0].get("data", {}).get("nameserver", "") if isinstance(ns_records[0], dict) else str(ns_records[0])).rstrip(".")
+        ns_b = (ns_records[1].get("data", {}).get("nameserver", "") if isinstance(ns_records[1], dict) else str(ns_records[1])).rstrip(".")
+        compare_result = safe_call(seer.dns_compare, domain, "A", ns_a, ns_b) if ns_a and ns_b else None
         if compare_result:
             nameserver_consistency = {
                 "server_a": ns_a,
@@ -1161,7 +1342,10 @@ def dns_health_check(domain: str) -> str:
     spf_found = False
     spf_issues = []
     if records_found.get("TXT") and isinstance(records_found["TXT"], list):
-        spf_records = [r for r in records_found["TXT"] if "v=spf1" in str(r).lower()]
+        spf_records = [
+            r for r in records_found["TXT"]
+            if "v=spf1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
+        ]
         if spf_records:
             spf_found = True
             if len(spf_records) > 1:
@@ -1191,10 +1375,14 @@ def dns_health_check(domain: str) -> str:
 
     # Critical records (weight 3)
     max_score += 3
-    if "A" in records_found:
+    has_a = "A" in records_found
+    has_aaaa = "AAAA" in records_found
+    if has_a or has_aaaa:
         score += 3
+        if not has_a and has_aaaa:
+            recommendations.append("IPv6-only (AAAA but no A record) — ensure IPv4 clients have a fallback")
     else:
-        recommendations.append("No A record found — domain will not resolve to an IPv4 address")
+        recommendations.append("No A or AAAA record — domain will not resolve to any IP address")
 
     max_score += 3
     if "SOA" in records_found:
@@ -1226,9 +1414,9 @@ def dns_health_check(domain: str) -> str:
 
     # Optional records (weight 1)
     max_score += 1
-    if "AAAA" in records_found:
+    if has_aaaa:
         score += 1
-    else:
+    elif has_a:
         recommendations.append("No AAAA record — consider adding IPv6 support")
 
     max_score += 1
@@ -1257,24 +1445,21 @@ def domain_timeline(domain: str) -> str:
     DNS setup, SSL certificates, and current infrastructure."""
     domain = domain.lower().strip()
 
-    # Registration data for dates
-    reg_data = safe_call(seer.lookup, domain)
-
-    # DNS infrastructure
-    dns_a = safe_call(seer.dig, domain, "A")
-    dns_ns = safe_call(seer.dig, domain, "NS")
-
-    # SSL certificate dates
-    ssl_data = safe_call(seer.ssl, domain)
-
-    # Current HTTP status
-    status_data = safe_call(seer.status, domain)
+    # Fan out all independent lookups concurrently
+    lookup_raw, dns_a, dns_ns, ssl_data, status_data = parallel_calls(
+        (seer.lookup, domain),
+        (seer.dig, domain, "A"),
+        (seer.dig, domain, "NS"),
+        (seer.ssl, domain),
+        (seer.status, domain),
+    )
+    reg_data = _extract_registration(lookup_raw)
 
     # Build timeline events
     timeline = []
 
     if reg_data and isinstance(reg_data, dict) and not reg_data.get("error"):
-        created = reg_data.get("created") or reg_data.get("creation_date")
+        created = reg_data.get("creation_date")
         if created:
             timeline.append({
                 "date": str(created)[:10],
@@ -1282,7 +1467,7 @@ def domain_timeline(domain: str) -> str:
                 "detail": f"Domain registered via {reg_data.get('registrar', 'unknown registrar')}",
             })
 
-        updated = reg_data.get("updated") or reg_data.get("last_updated")
+        updated = reg_data.get("updated_date")
         if updated:
             timeline.append({
                 "date": str(updated)[:10],
@@ -1290,19 +1475,26 @@ def domain_timeline(domain: str) -> str:
                 "detail": "WHOIS/RDAP record last updated",
             })
 
-        expiry = reg_data.get("expiry") or reg_data.get("expiration_date")
+        expiry = reg_data.get("expiration_date")
         if expiry:
             days_left = _days_until(expiry)
             timeline.append({
                 "date": str(expiry)[:10],
                 "event": "domain_expires",
-                "detail": f"Registration expires ({days_left} days remaining)" if days_left is not None else "Registration expiry date",
+                "detail": (
+                    f"Registration expired {abs(days_left)} days ago" if days_left is not None and days_left < 0
+                    else f"Registration expires ({days_left} days remaining)" if days_left is not None
+                    else "Registration expiry date"
+                ),
             })
 
     if ssl_data and isinstance(ssl_data, dict):
-        not_before = ssl_data.get("not_before") or ssl_data.get("valid_from")
-        not_after = ssl_data.get("not_after") or ssl_data.get("expiry") or ssl_data.get("valid_to")
-        issuer = ssl_data.get("issuer", "unknown CA")
+        # SslReport has chain[] with CertDetail items; dates and issuer live on chain[0]
+        ssl_chain = ssl_data.get("chain", [])
+        ssl_leaf = ssl_chain[0] if ssl_chain and isinstance(ssl_chain, list) and isinstance(ssl_chain[0], dict) else {}
+        not_before = ssl_leaf.get("valid_from")
+        not_after = ssl_leaf.get("valid_until")
+        issuer = ssl_leaf.get("issuer", "unknown CA")
 
         if not_before:
             timeline.append({
@@ -1315,7 +1507,11 @@ def domain_timeline(domain: str) -> str:
             timeline.append({
                 "date": str(not_after)[:10],
                 "event": "ssl_certificate_expires",
-                "detail": f"SSL certificate expires ({ssl_days} days remaining)" if ssl_days is not None else "SSL certificate expiry",
+                "detail": (
+                    f"SSL certificate expired {abs(ssl_days)} days ago" if ssl_days is not None and ssl_days < 0
+                    else f"SSL certificate expires ({ssl_days} days remaining)" if ssl_days is not None
+                    else "SSL certificate expiry"
+                ),
             })
 
     # Sort timeline chronologically
@@ -1328,7 +1524,7 @@ def domain_timeline(domain: str) -> str:
         "nameservers": dns_ns if dns_ns else None,
         "registrar": reg_data.get("registrar") if reg_data and isinstance(reg_data, dict) else None,
         "http_status": status_data.get("http_status") if status_data and isinstance(status_data, dict) else None,
-        "ssl_valid": status_data.get("ssl_valid") if status_data and isinstance(status_data, dict) else None,
+        "ssl_valid": _get_cert(status_data).get("is_valid") if status_data else None,
     }
 
     return json.dumps({
@@ -1372,6 +1568,7 @@ def expiration_alert(domains: str = "") -> str:
     if not isinstance(bulk_results, list):
         bulk_results = [None] * len(domain_list)
 
+    expired = []    # already expired (days < 0)
     critical = []   # <7 days
     warning = []    # <30 days
     upcoming = []   # <90 days
@@ -1379,12 +1576,14 @@ def expiration_alert(domains: str = "") -> str:
     unknown = []    # Could not determine
 
     for i, domain in enumerate(domain_list):
-        result = bulk_results[i] if i < len(bulk_results) else None
+        raw = bulk_results[i] if i < len(bulk_results) else None
+        result = _unwrap_bulk(raw) if raw and isinstance(raw, dict) and "operation" in raw else raw
         entry = {"domain": domain}
 
-        if result and isinstance(result, dict) and not result.get("error"):
-            expiry = result.get("expiry") or result.get("expiration_date")
-            registrar = result.get("registrar")
+        reg = _extract_registration(result)
+        if reg and reg.get("source"):
+            expiry = reg.get("expiration_date")
+            registrar = reg.get("registrar")
             entry["expiry"] = str(expiry) if expiry else None
             entry["registrar"] = registrar
 
@@ -1394,7 +1593,7 @@ def expiration_alert(domains: str = "") -> str:
                     entry["days_remaining"] = days_left
                     if days_left < 0:
                         entry["urgency"] = "expired"
-                        critical.append(entry)
+                        expired.append(entry)
                     elif days_left < 7:
                         entry["urgency"] = "critical"
                         critical.append(entry)
@@ -1418,7 +1617,10 @@ def expiration_alert(domains: str = "") -> str:
             entry["error"] = "Could not retrieve registration data"
             unknown.append(entry)
 
-    # Sort each category by days remaining (most urgent first)
+    # Sort each category by days remaining (most urgent first).
+    # expired uses reverse=True so most-recently-expired (-1 days) appears before
+    # long-expired (-365 days), since the recently-expired may still be in grace period.
+    expired.sort(key=lambda e: e.get("days_remaining", 99999), reverse=True)
     for category in (critical, warning, upcoming, healthy):
         category.sort(key=lambda e: e.get("days_remaining", 99999))
 
@@ -1426,17 +1628,459 @@ def expiration_alert(domains: str = "") -> str:
         "source": source,
         "total_checked": len(domain_list),
         "summary": {
+            "expired": len(expired),
             "critical": len(critical),
             "warning": len(warning),
             "upcoming": len(upcoming),
             "healthy": len(healthy),
             "unknown": len(unknown),
         },
+        "expired": expired,
         "critical": critical,
         "warning": warning,
         "upcoming": upcoming,
         "healthy": healthy,
         "unknown": unknown,
+    }, default=str)
+
+
+def _audit_one(domain: str) -> dict:
+    """Gather all security signals for a single domain (used by compare_security).
+
+    Returns a dict with ssl, dnssec, email, http, dns_zone, infrastructure
+    sections plus an overall risk_score.
+    """
+    # Fan out every probe for this domain concurrently
+    (ssl_data, dnssec_data, txt_records, dmarc_records, mx_records,
+     ns_records, caa_records, a_records, cname_records, status_data) = parallel_calls(
+        (seer.ssl, domain),
+        (seer.dnssec, domain),
+        (seer.dig, domain, "TXT"),
+        (seer.dig, f"_dmarc.{domain}", "TXT"),
+        (seer.dig, domain, "MX"),
+        (seer.dig, domain, "NS"),
+        (seer.dig, domain, "CAA"),
+        (seer.dig, domain, "A"),
+        (seer.dig, domain, "CNAME"),
+        (seer.status, domain),
+    )
+
+    risk_score = 0
+
+    # --- SSL ---
+    ssl_section = {"status": "unknown", "valid": False}
+    if ssl_data and isinstance(ssl_data, dict):
+        chain = ssl_data.get("chain", [])
+        leaf = chain[0] if chain and isinstance(chain, list) and isinstance(chain[0], dict) else {}
+        ssl_section = {
+            "valid": ssl_data.get("is_valid", False),
+            "issuer": leaf.get("issuer"),
+            "expiry": leaf.get("valid_until"),
+            "key_type": leaf.get("key_type"),
+            "key_bits": leaf.get("key_bits"),
+            "protocol": ssl_data.get("protocol_version"),
+            "san_count": len(ssl_data.get("san_names") or []),
+        }
+        days_left = _days_until(leaf.get("valid_until")) if leaf.get("valid_until") else None
+        if days_left is not None:
+            ssl_section["days_until_expiry"] = days_left
+        if not ssl_section["valid"]:
+            ssl_section["status"] = "critical"
+            risk_score += 3
+        elif days_left is not None and days_left < 7:
+            ssl_section["status"] = "critical"
+            risk_score += 3
+        elif days_left is not None and days_left < 30:
+            ssl_section["status"] = "warning"
+            risk_score += 1
+        else:
+            ssl_section["status"] = "healthy"
+    elif ssl_data is None:
+        ssl_section = {"status": "error", "valid": False, "error": "Could not retrieve certificate"}
+        risk_score += 3
+
+    # --- DNSSEC ---
+    dnssec_section = {"status": "unknown", "enabled": False}
+    if dnssec_data and isinstance(dnssec_data, dict):
+        enabled = dnssec_data.get("enabled", False) or dnssec_data.get("has_ds_records", False)
+        valid = dnssec_data.get("valid", False)
+        dnssec_section = {
+            "enabled": enabled,
+            "valid": valid,
+            "issues": dnssec_data.get("issues") or [],
+            "status": "healthy" if valid else ("warning" if enabled else "not_configured"),
+        }
+        if not enabled:
+            risk_score += 1
+        elif not valid:
+            risk_score += 2
+
+    # --- Email auth ---
+    email_section = {"has_mx": bool(mx_records), "spf": "missing", "dmarc": "missing"}
+    if txt_records and isinstance(txt_records, list):
+        for rec in txt_records:
+            txt = rec.get("data", {}).get("text", "") if isinstance(rec, dict) else str(rec)
+            if "v=spf1" in txt.lower():
+                if "-all" in txt.lower():
+                    email_section["spf"] = "strict"
+                elif "~all" in txt.lower():
+                    email_section["spf"] = "softfail"
+                elif "+all" in txt.lower():
+                    email_section["spf"] = "permissive_INSECURE"
+                    risk_score += 3
+                else:
+                    email_section["spf"] = "present"
+                break
+    if dmarc_records and isinstance(dmarc_records, list):
+        for rec in dmarc_records:
+            txt = rec.get("data", {}).get("text", "") if isinstance(rec, dict) else str(rec)
+            if "v=dmarc1" in txt.lower():
+                if "p=reject" in txt.lower():
+                    email_section["dmarc"] = "reject"
+                elif "p=quarantine" in txt.lower():
+                    email_section["dmarc"] = "quarantine"
+                elif "p=none" in txt.lower():
+                    email_section["dmarc"] = "none"
+                    risk_score += 1
+                else:
+                    email_section["dmarc"] = "present"
+                break
+    if email_section["has_mx"]:
+        if email_section["spf"] == "missing":
+            risk_score += 2
+        if email_section["dmarc"] == "missing":
+            risk_score += 2
+
+    # --- CAA ---
+    caa_section = {"has_records": bool(caa_records), "has_issuewild": False, "has_iodef": False}
+    if caa_records and isinstance(caa_records, list):
+        for rec in caa_records:
+            data = rec.get("data", rec) if isinstance(rec, dict) else {}
+            if isinstance(data, dict):
+                tag = data.get("tag", "")
+                if tag == "issuewild":
+                    caa_section["has_issuewild"] = True
+                elif tag == "iodef":
+                    caa_section["has_iodef"] = True
+    if not caa_section["has_records"]:
+        risk_score += 1
+
+    # --- Nameservers ---
+    ns_list = []
+    if ns_records and isinstance(ns_records, list):
+        for rec in ns_records:
+            ns = (rec.get("data", rec) if isinstance(rec, dict) else {})
+            if isinstance(ns, dict):
+                ns_list.append(ns.get("nameserver", "").rstrip("."))
+            else:
+                ns_list.append(str(ns).rstrip("."))
+    ns_section = {"count": len(ns_list), "nameservers": ns_list[:6]}
+    if len(ns_list) < 2:
+        risk_score += 2
+
+    # --- Infrastructure ---
+    from .pentest_tools import _identify_cdn_from_cname, _identify_hosting
+    infra_section = {"cdn_waf": [], "hosting": []}
+    if cname_records and isinstance(cname_records, list):
+        for rec in cname_records:
+            data = rec.get("data", rec) if isinstance(rec, dict) else {}
+            target = (data.get("target", "") if isinstance(data, dict) else str(data)).lower().rstrip(".")
+            cdn = _identify_cdn_from_cname(target)
+            if cdn and cdn not in infra_section["cdn_waf"]:
+                infra_section["cdn_waf"].append(cdn)
+    if a_records and isinstance(a_records, list):
+        for rec in a_records:
+            data = rec.get("data", rec) if isinstance(rec, dict) else {}
+            ip = (data.get("address", "") if isinstance(data, dict) else str(data))
+            provider = _identify_hosting(str(ip))
+            if provider and provider not in infra_section["hosting"]:
+                infra_section["hosting"].append(provider)
+
+    # --- HTTP ---
+    http_section = {"status": "unknown"}
+    if status_data and isinstance(status_data, dict):
+        cert = _get_cert(status_data)
+        ssl_valid = cert.get("is_valid", False)
+        http_section = {
+            "http_status": status_data.get("http_status"),
+            "ssl_valid": ssl_valid,
+            "status": "healthy" if ssl_valid else "warning",
+        }
+        if not ssl_valid and ssl_section.get("status") not in ("critical", "warning"):
+            risk_score += 1
+
+    # --- Overall ---
+    if risk_score >= 8:
+        overall = "critical"
+    elif risk_score >= 5:
+        overall = "high"
+    elif risk_score >= 2:
+        overall = "medium"
+    else:
+        overall = "low"
+
+    return {
+        "domain": domain,
+        "overall_risk": overall,
+        "risk_score": risk_score,
+        "ssl": ssl_section,
+        "dnssec": dnssec_section,
+        "email_auth": email_section,
+        "caa": caa_section,
+        "nameservers": ns_section,
+        "infrastructure": infra_section,
+        "http": http_section,
+    }
+
+
+_STATUS_RANK = {"critical": 0, "error": 0, "warning": 1, "not_configured": 2, "unknown": 3, "healthy": 4}
+
+# SPF / DMARC strength ordering (higher index = stronger)
+_SPF_RANK = {"missing": 0, "present": 1, "neutral": 1, "permissive_INSECURE": 0, "softfail": 2, "strict": 3}
+_DMARC_RANK = {"missing": 0, "present": 1, "none": 1, "quarantine": 2, "reject": 3}
+
+
+def _summarize_ssl(ssl: dict) -> str:
+    """One-liner summary of an SSL audit section."""
+    st = ssl.get("status", "unknown")
+    if st in ("error", "unknown"):
+        return ssl.get("error", "No certificate retrieved")
+    parts = []
+    if ssl.get("valid"):
+        parts.append("Valid")
+    else:
+        parts.append("INVALID")
+    days = ssl.get("days_until_expiry")
+    if days is not None:
+        parts.append(f"{days}d until expiry")
+    kt = ssl.get("key_type")
+    kb = ssl.get("key_bits")
+    if kt:
+        parts.append(f"{kt}-{kb}" if kb else kt)
+    issuer = ssl.get("issuer", "")
+    # Extract just the CN from the issuer string
+    if "CN=" in issuer:
+        cn = issuer.split("CN=")[-1].split(",")[0].strip()
+        parts.append(cn)
+    elif issuer:
+        parts.append(issuer[:40])
+    sans = ssl.get("san_count")
+    if sans and sans > 1:
+        parts.append(f"{sans} SANs")
+    return ", ".join(parts)
+
+
+def _summarize_dnssec(dnssec: dict) -> str:
+    st = dnssec.get("status", "unknown")
+    if st == "healthy":
+        return "Enabled and valid"
+    if st == "warning":
+        issues = dnssec.get("issues", [])
+        return f"Enabled but incomplete ({issues[0]})" if issues else "Enabled but not fully valid"
+    if st == "not_configured":
+        return "Not configured"
+    return "Unknown"
+
+
+def _summarize_email(email: dict) -> str:
+    parts = []
+    spf = email.get("spf", "missing")
+    dmarc = email.get("dmarc", "missing")
+    parts.append(f"SPF: {spf}")
+    parts.append(f"DMARC: {dmarc}")
+    if not email.get("has_mx"):
+        parts.append("(no MX)")
+    return " | ".join(parts)
+
+
+def _summarize_caa(caa: dict) -> str:
+    if not caa.get("has_records"):
+        return "No CAA records"
+    tags = []
+    if caa.get("has_issuewild"):
+        tags.append("issuewild")
+    if caa.get("has_iodef"):
+        tags.append("iodef")
+    return f"Present{' (' + ', '.join(tags) + ')' if tags else ' (no issuewild/iodef)'}"
+
+
+def _summarize_ns(ns: dict) -> str:
+    count = ns.get("count", 0)
+    names = ns.get("nameservers", [])
+    if count == 0:
+        return "None found"
+    preview = ", ".join(names[:3])
+    if count > 3:
+        preview += f" (+{count - 3} more)"
+    return f"{count} NS: {preview}"
+
+
+def _summarize_infra(infra: dict) -> str:
+    parts = []
+    cdns = infra.get("cdn_waf", [])
+    hosts = infra.get("hosting", [])
+    if cdns:
+        parts.append("CDN/WAF: " + ", ".join(cdns))
+    if hosts:
+        parts.append("Hosting: " + ", ".join(hosts))
+    return " | ".join(parts) if parts else "No CDN/WAF or hosting detected"
+
+
+def _summarize_http(http: dict) -> str:
+    st = http.get("status", "unknown")
+    code = http.get("http_status")
+    ssl_ok = http.get("ssl_valid")
+    parts = []
+    if code is not None:
+        parts.append(f"HTTP {code}")
+    else:
+        parts.append("No HTTP response")
+    if ssl_ok:
+        parts.append("SSL valid")
+    elif ssl_ok is False:
+        parts.append("SSL invalid")
+    return " | ".join(parts)
+
+
+def _verdict(val_a, val_b, name_a: str, name_b: str, *,
+             higher_is_better=False, lower_is_better=False,
+             status_field=False, rank_map=None) -> str:
+    """Return the winning domain name, 'equal', or 'different'."""
+    if val_a == val_b:
+        return "equal"
+    if rank_map is not None:
+        ra = rank_map.get(val_a, -1)
+        rb = rank_map.get(val_b, -1)
+        if ra > rb:
+            return name_a
+        if rb > ra:
+            return name_b
+        return "equal"
+    if status_field:
+        ra = _STATUS_RANK.get(val_a, 3)
+        rb = _STATUS_RANK.get(val_b, 3)
+        if ra > rb:
+            return name_a
+        if rb > ra:
+            return name_b
+        return "equal"
+    if isinstance(val_a, (int, float)) and isinstance(val_b, (int, float)):
+        if higher_is_better:
+            return name_a if val_a > val_b else name_b
+        if lower_is_better:
+            return name_a if val_a < val_b else name_b
+    if isinstance(val_a, bool) and isinstance(val_b, bool):
+        if val_a and not val_b:
+            return name_a
+        if val_b and not val_a:
+            return name_b
+    return "different"
+
+
+@tool
+def compare_security(domain_a: str, domain_b: str) -> str:
+    """Deep side-by-side security comparison of two domains. Audits both domains
+    concurrently across SSL/TLS, DNSSEC, email authentication (SPF/DMARC),
+    CAA policy, nameserver redundancy, CDN/WAF presence, and HTTP posture.
+    Returns a pre-formatted comparison table with per-category verdicts and
+    an overall winner."""
+    domain_a = domain_a.lower().strip()
+    domain_b = domain_b.lower().strip()
+
+    # Run both full audits concurrently
+    audit_a, audit_b = parallel_calls(
+        (_audit_one, domain_a),
+        (_audit_one, domain_b),
+    )
+
+    # Build category-level comparison with pre-summarized one-liners.
+    # Verdicts use the actual domain name so the LLM never has to decode
+    # abstract A/B labels.
+    categories = [
+        {
+            "category": "SSL/TLS",
+            domain_a: _summarize_ssl(audit_a["ssl"]),
+            domain_b: _summarize_ssl(audit_b["ssl"]),
+            "winner": _verdict(audit_a["ssl"]["status"], audit_b["ssl"]["status"],
+                               domain_a, domain_b, status_field=True),
+        },
+        {
+            "category": "DNSSEC",
+            domain_a: _summarize_dnssec(audit_a["dnssec"]),
+            domain_b: _summarize_dnssec(audit_b["dnssec"]),
+            "winner": _verdict(audit_a["dnssec"]["status"], audit_b["dnssec"]["status"],
+                               domain_a, domain_b, status_field=True),
+        },
+        {
+            "category": "Email Auth",
+            domain_a: _summarize_email(audit_a["email_auth"]),
+            domain_b: _summarize_email(audit_b["email_auth"]),
+            "winner": _verdict(
+                _SPF_RANK.get(audit_a["email_auth"]["spf"], 0) + _DMARC_RANK.get(audit_a["email_auth"]["dmarc"], 0),
+                _SPF_RANK.get(audit_b["email_auth"]["spf"], 0) + _DMARC_RANK.get(audit_b["email_auth"]["dmarc"], 0),
+                domain_a, domain_b, higher_is_better=True,
+            ),
+        },
+        {
+            "category": "CAA Policy",
+            domain_a: _summarize_caa(audit_a["caa"]),
+            domain_b: _summarize_caa(audit_b["caa"]),
+            "winner": _verdict(audit_a["caa"]["has_records"], audit_b["caa"]["has_records"],
+                               domain_a, domain_b),
+        },
+        {
+            "category": "Nameservers",
+            domain_a: _summarize_ns(audit_a["nameservers"]),
+            domain_b: _summarize_ns(audit_b["nameservers"]),
+            "winner": _verdict(
+                audit_a["nameservers"]["count"], audit_b["nameservers"]["count"],
+                domain_a, domain_b, higher_is_better=True,
+            ),
+        },
+        {
+            "category": "Infrastructure",
+            domain_a: _summarize_infra(audit_a["infrastructure"]),
+            domain_b: _summarize_infra(audit_b["infrastructure"]),
+            "winner": _verdict(
+                bool(audit_a["infrastructure"]["cdn_waf"]),
+                bool(audit_b["infrastructure"]["cdn_waf"]),
+                domain_a, domain_b,
+            ),
+        },
+        {
+            "category": "HTTP",
+            domain_a: _summarize_http(audit_a["http"]),
+            domain_b: _summarize_http(audit_b["http"]),
+            "winner": _verdict(audit_a["http"]["status"], audit_b["http"]["status"],
+                               domain_a, domain_b, status_field=True),
+        },
+    ]
+
+    # Tally verdicts
+    a_wins = sum(1 for c in categories if c["winner"] == domain_a)
+    b_wins = sum(1 for c in categories if c["winner"] == domain_b)
+    ties = sum(1 for c in categories if c["winner"] in ("equal", "different"))
+
+    score_a = audit_a["risk_score"]
+    score_b = audit_b["risk_score"]
+    if score_a < score_b:
+        winner = domain_a
+    elif score_b < score_a:
+        winner = domain_b
+    else:
+        winner = "tie"
+
+    return json.dumps({
+        "domain_a": domain_a,
+        "domain_b": domain_b,
+        "comparison": categories,
+        "scores": {
+            domain_a: {"risk_score": score_a, "overall_risk": audit_a["overall_risk"]},
+            domain_b: {"risk_score": score_b, "overall_risk": audit_b["overall_risk"]},
+        },
+        "tally": {f"{domain_a} wins": a_wins, f"{domain_b} wins": b_wins, "equal": ties},
+        "winner": winner,
+        "risk_margin": abs(score_a - score_b),
     }, default=str)
 
 
@@ -1446,4 +2090,5 @@ COMPOSITE_ADVISOR_TOOLS = [
     dns_health_check,
     domain_timeline,
     expiration_alert,
+    compare_security,
 ]

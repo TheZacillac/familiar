@@ -86,9 +86,9 @@ Then enable tracing in `.env`:
 
 Traces include every LLM call, tool invocation, and agent step. Tracing is disabled by default and requires both the extra install and a valid API key.
 
-## Tools
+## Tools (61 total)
 
-### Seer — Domain Intelligence
+### Seer — Domain Intelligence (20 tools)
 
 | Tool | Description |
 |---|---|
@@ -100,19 +100,81 @@ Traces include every LLM call, tool invocation, and agent step. Tracing is disab
 | `seer_dig` | DNS record queries |
 | `seer_propagation` | DNS propagation across global nameservers |
 | `seer_status` | Domain health check (HTTP, SSL, expiration) |
+| `seer_availability` | Domain registration availability check |
+| `seer_subdomains` | Subdomain enumeration via Certificate Transparency |
+| `seer_ssl` | SSL/TLS certificate details |
+| `seer_dnssec` | DNSSEC validation status |
+| `seer_dns_compare` | Compare DNS records between two nameservers |
+| `seer_dns_follow` | Monitor DNS record changes over time |
+| `seer_diff` | Side-by-side comparison of two domains |
 | `seer_bulk_lookup` | Bulk RDAP/WHOIS lookups |
 | `seer_bulk_whois` | Bulk WHOIS lookups |
 | `seer_bulk_dig` | Bulk DNS queries |
 | `seer_bulk_status` | Bulk health checks |
 | `seer_bulk_propagation` | Bulk propagation checks |
 
-### Tome — Reference Data
+### Tome — Reference Data (9 tools)
 
 | Tool | Description |
 |---|---|
 | `tome_tld_lookup` | TLD information (type, registry, DNSSEC, restrictions) |
 | `tome_tld_search` | Search TLDs by keyword |
+| `tome_tld_overview` | Comprehensive TLD overview joining all related data |
+| `tome_tld_list_by_type` | List TLDs by type (gTLD, ccTLD, nTLD) |
+| `tome_tld_count` | Total TLD count in the database |
 | `tome_record_lookup` | DNS record type details |
 | `tome_record_search` | Search DNS record types |
 | `tome_glossary_lookup` | Domain industry term definitions |
 | `tome_glossary_search` | Search the glossary |
+
+### Strategic Advisors (6 tools)
+
+| Tool | Description |
+|---|---|
+| `appraise_domain` | Domain value appraisal with market analysis |
+| `plan_acquisition` | Acquisition strategy for a target domain |
+| `suggest_domains` | Generate and check domain name suggestions for a brand |
+| `audit_portfolio` | Audit a portfolio of domains for risk and value |
+| `competitive_intel` | Competitive intelligence report for a domain |
+| `migration_preflight` | Pre-migration readiness assessment |
+
+### Composite Advisors (6 tools)
+
+| Tool | Description |
+|---|---|
+| `security_audit` | Comprehensive security audit of a domain |
+| `brand_protection_scan` | Brand protection and typosquatting analysis |
+| `dns_health_check` | DNS configuration health check |
+| `domain_timeline` | Historical timeline of a domain |
+| `expiration_alert` | Expiration risk assessment |
+| `compare_security` | Compare security posture of two domains |
+
+### Pentest — Security Scanning (7 tools)
+
+| Tool | Description |
+|---|---|
+| `subdomain_takeover_scan` | Subdomain takeover vulnerability detection |
+| `http_security_scan` | HTTP security header analysis |
+| `email_security_audit` | Email authentication (SPF, DKIM, DMARC) deep dive |
+| `ssl_deep_scan` | SSL/TLS configuration analysis |
+| `dns_zone_security` | DNS zone security assessment |
+| `infrastructure_recon` | Infrastructure reconnaissance |
+| `exposure_report` | Unified exposure report aggregating all scans |
+
+### Memory and Workflow (13 tools)
+
+| Tool | Description |
+|---|---|
+| `remember_domain` | Save domain notes and tags to persistent notebook |
+| `recall_domain` | Retrieve notes for a specific domain |
+| `recall_all_domains` | List all remembered domains |
+| `watchlist_add` | Add a domain to the monitoring watchlist |
+| `watchlist_remove` | Remove a domain from the watchlist |
+| `watchlist_list` | List all watchlisted domains |
+| `watchlist_check` | Check current status of watchlisted domains |
+| `set_explanation_mode` | Toggle verbose/brief explanation mode |
+| `get_explanation_mode` | Check current explanation mode |
+| `tag_search` | Search domain notes by tag |
+| `create_report` | Generate a structured domain report |
+| `compare_domains` | Compare multiple domains side by side |
+| `session_summary` | Summarize the current session's findings |

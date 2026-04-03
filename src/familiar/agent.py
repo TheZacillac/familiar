@@ -6,9 +6,8 @@ import scrolls
 from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
 
+from . import config
 from .tools import ALL_TOOLS
-
-DEFAULT_MODEL = "ollama:nemotron-3-nano:latest"
 
 SYSTEM_PROMPT = """\
 You are Familiar, a strategic domain name intelligence advisor. You combine deep technical \
@@ -34,6 +33,9 @@ RFC references and industry best practices.
 
 ## How You Work
 
+- **Use domain names EXACTLY as the user typed them.** Never correct, adjust, or "fix" spelling \
+— if the user writes "minstaller.app", query "minstaller.app", not "mininstaller.app". Copy the \
+domain character-for-character.
 - Always use tools to look up real data — never guess registration status, DNS records, or dates.
 - When a tool call fails, try alternatives (RDAP <-> WHOIS, different record types). \
 Present partial results and note any gaps.
@@ -60,6 +62,10 @@ as WHOIS does not record individual renewal events.
 **Domain Suggestions:** Prioritize short names, .com availability, pronounceability, \
 absence of hyphens/numbers, and TLD relevance to the brand's industry. Rank candidates clearly.
 
+**Security Comparison:** Use compare_security for deep side-by-side security posture \
+comparison of two domains across SSL, DNSSEC, email auth, CAA, nameservers, CDN/WAF, \
+and HTTP. Present the field-by-field diff and overall winner.
+
 **Portfolio Audits:** Flag upcoming expirations, missing DNSSEC, invalid SSL, absent \
 SPF/DMARC for domains with MX records, and single-registrar concentration risk. \
 Assign severity levels and provide prioritized action items.
@@ -70,19 +76,34 @@ CDN usage, and defensive registration patterns. Identify gaps and opportunities.
 **Migration Planning:** Walk through every step methodically. Flag blockers (locks, pending \
 transfers, short expiry). Emphasize email continuity and TTL management.
 
-**Penetration Testing:** Use exposure_report for a full pentest-style assessment. Present \
-findings organized by severity (CRITICAL → HIGH → MEDIUM → LOW → INFO) with specific \
-remediation steps. For targeted scans, use individual tools: subdomain_takeover_scan for \
-dangling CNAMEs, email_security_audit for SPF/DMARC/DKIM deep-dive, ssl_deep_scan for \
-certificate analysis, dns_zone_security for zone hardening, infrastructure_recon for \
-technology mapping.
+**Penetration Testing:** Use exposure_report for a full pentest-style assessment. For targeted \
+scans, use individual tools: subdomain_takeover_scan for dangling CNAMEs, email_security_audit \
+for SPF/DMARC/DKIM deep-dive, ssl_deep_scan for certificate analysis, dns_zone_security for \
+zone hardening, infrastructure_recon for technology mapping.
+
+## Presenting Tool Results
+
+When presenting results from exposure_report, security_audit, or any tool that returns structured \
+findings, you MUST faithfully reproduce the tool's data:
+
+- **Use pre-computed counts exactly.** The executive_summary.severity_breakdown contains the \
+authoritative finding counts per severity level. Use those numbers directly — never recount, \
+estimate, or round. The total_findings field is the authoritative total.
+- **Present each finding exactly once.** Each finding appears in the findings array with a single \
+assigned severity. Present it under that severity and nowhere else. Never duplicate a finding \
+across multiple severity categories.
+- **Never reclassify severity.** If a finding says "MEDIUM", present it as MEDIUM — do not \
+promote it to HIGH or demote it to LOW based on your own judgment.
+- **Ensure counts match content.** Before responding, verify that the number of findings you \
+list under each severity heading matches the severity_breakdown counts. If you listed 4 CRITICAL \
+findings, the summary must say 4 CRITICAL — not 2.
 
 ## Slash Commands
 
 Users may type these in the REPL — respond as if they asked the full question:
 /assess, /compare, /secure, /suggest, /acquire, /portfolio, /competitive, /migrate, \
 /watch, /unwatch, /watchlist, /check, /domains, /security, /brand, /dns, /timeline, \
-/expiry, /report, /tags, /summary, /pentest, /takeover, /headers, /recon
+/expiry, /report, /tags, /summary, /pentest, /takeover, /headers, /recon, /vs
 """
 
 
@@ -137,7 +158,7 @@ def _load_skill_dir(skill_dir, heading_prefix="##") -> list[str]:
 
     # Recurse into sub-skills (e.g., other/email-auth/, other/typosquatting/)
     for child in sorted(skill_dir.iterdir()):
-        if child.is_dir() and not child.name.startswith(("_", ".")) and child.name != "reference":
+        if child.is_dir() and not child.name.startswith(("_", ".")) and child.name not in ("reference", "scripts"):
             sections.extend(_load_skill_dir(child, heading_prefix=heading_prefix + "#"))
 
     return sections
@@ -169,17 +190,16 @@ def _build_system_prompt() -> str:
     return SYSTEM_PROMPT
 
 
-def _build_model_kwargs(model_id: str) -> dict:
-    """Build provider-specific kwargs from environment variables."""
-    kwargs = {}
-    provider = model_id.split(":")[0] if ":" in model_id else None
-
-    if provider == "ollama":
-        base_url = os.environ.get("OLLAMA_BASE_URL")
-        if base_url:
-            kwargs["base_url"] = base_url
-
-    return kwargs
+def _configure_tracing():
+    """Push tracing config into env vars so LangSmith activates."""
+    if config.get("tracing", "enabled", False):
+        os.environ.setdefault("LANGSMITH_TRACING", "true")
+        api_key = config.get("tracing", "api_key", "")
+        if api_key:
+            os.environ.setdefault("LANGSMITH_API_KEY", api_key)
+        project = config.get("tracing", "project", "")
+        if project:
+            os.environ.setdefault("LANGSMITH_PROJECT", project)
 
 
 def build_agent(checkpointer=None):
@@ -190,11 +210,13 @@ def build_agent(checkpointer=None):
             state between invocations. Pass a MemorySaver for REPL sessions.
     """
     _load_env()
-    model_id = os.environ.get("FAMILIAR_MODEL", DEFAULT_MODEL)
+    # Config is loaded after _load_env so env vars from .env are available
+    config.load()
+    _configure_tracing()
 
     model = init_chat_model(
-        model=model_id,
-        **_build_model_kwargs(model_id),
+        model=config.model_id(),
+        **config.model_kwargs(),
     )
 
     agent = create_deep_agent(

@@ -6,12 +6,12 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config
+
 
 def _default_db_path() -> Path:
     """Return the default database path, creating the directory if needed."""
-    path = Path.home() / ".familiar" / "familiar.db"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return config.db_path()
 
 
 class Memory:

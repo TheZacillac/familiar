@@ -9,18 +9,23 @@ Familiar is a conversational AI agent for domain intelligence, powered by LangCh
 ```
 familiar/
 ├── pyproject.toml
-├── .env                     # Local environment config (gitignored)
-├── .env.example             # Environment template
+├── config.default.toml          # Default config — copy to ~/.familiar/config.toml
+├── .env                         # Local environment overrides (gitignored)
+├── .env.example                 # Environment template
 └── src/familiar/
-    ├── __init__.py           # Version: 0.1.0
-    ├── cli.py                # CLI entry point (REPL + single-query)
-    ├── agent.py              # LangGraph Deep Agent builder
+    ├── __init__.py               # Version: 0.1.0
+    ├── config.py                 # TOML config loader (~/.familiar/config.toml)
+    ├── cli.py                    # CLI entry point (REPL + single-query)
+    ├── agent.py                  # LangGraph Deep Agent builder
+    ├── memory.py                 # SQLite persistence (domain notebook, watchlist, prefs)
+    ├── utils.py                  # Shared utilities (safe_call, days_until)
     └── tools/
-        ├── __init__.py       # Exports ALL_TOOLS (50 total)
-        ├── seer_tools.py     # 20 Seer tools (LangChain @tool wrappers)
-        ├── tome_tools.py     # 6 Tome tools (LangChain @tool wrappers)
-        ├── advisor_tools.py  # 11 Advisory tools (6 strategic + 5 composite)
-        └── memory_tools.py   # 13 Memory + workflow tools
+        ├── __init__.py           # Exports ALL_TOOLS (60 total)
+        ├── seer_tools.py         # 20 Seer tools (LangChain @tool wrappers)
+        ├── tome_tools.py         # 9 Tome tools (LangChain @tool wrappers)
+        ├── advisor_tools.py      # 11 Advisory tools (6 strategic + 5 composite)
+        ├── pentest_tools.py      # 7 Pentest tools (security scanning composites)
+        └── memory_tools.py       # 13 Memory + workflow tools
 ```
 
 ---
@@ -63,7 +68,7 @@ Catppuccin Mocha palette with Rich library:
 
 ---
 
-## Tools (50 total)
+## Tools (61 total)
 
 All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 
@@ -73,17 +78,21 @@ All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 
 **Bulk (max 100 domains):** `seer_bulk_lookup`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`
 
-### Tome Tools (6) — `tome_tools.py`
+### Tome Tools (9) — `tome_tools.py`
 
-`tome_tld_lookup`, `tome_tld_search`, `tome_record_lookup`, `tome_record_search`, `tome_glossary_lookup`, `tome_glossary_search`
+`tome_tld_lookup`, `tome_tld_search`, `tome_tld_overview`, `tome_tld_list_by_type`, `tome_tld_count`, `tome_record_lookup`, `tome_record_search`, `tome_glossary_lookup`, `tome_glossary_search`
 
 ### Strategic Advisor Tools (6) — `advisor_tools.py`
 
 `appraise_domain`, `plan_acquisition`, `suggest_domains`, `audit_portfolio`, `competitive_intel`, `migration_preflight`
 
-### Composite Advisor Tools (5) — `advisor_tools.py`
+### Composite Advisor Tools (6) — `advisor_tools.py`
 
-`security_audit`, `brand_protection_scan`, `dns_health_check`, `domain_timeline`, `expiration_alert`
+`security_audit`, `brand_protection_scan`, `dns_health_check`, `domain_timeline`, `expiration_alert`, `compare_security`
+
+### Pentest Tools (7) — `pentest_tools.py`
+
+`subdomain_takeover_scan`, `http_security_scan`, `email_auth_audit`, `ssl_deep_scan`, `dns_zone_security`, `infrastructure_recon`, `exposure_report`
 
 ### Memory Tools (9) — `memory_tools.py`
 
@@ -101,18 +110,30 @@ All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 
 ## Configuration
 
-### Environment Variables (.env)
+### Config file (`~/.familiar/config.toml`)
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `FAMILIAR_MODEL` | `ollama:nemotron-3-nano:latest` | LLM in `provider:model` format |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `OPENAI_API_KEY` | — | OpenAI API key |
-| `ANTHROPIC_API_KEY` | — | Anthropic API key |
-| `GOOGLE_API_KEY` | — | Google Gemini API key |
-| `LANGSMITH_TRACING` | `false` | Enable LangSmith observability |
-| `LANGSMITH_API_KEY` | — | LangSmith auth key |
-| `LANGSMITH_PROJECT` | `familiar` | LangSmith project name |
+Primary configuration via TOML. Copy `config.default.toml` to `~/.familiar/config.toml` and edit. See `config.default.toml` for all options with comments. Override the config file path with `FAMILIAR_CONFIG` env var.
+
+Sections: `[model]`, `[model.ollama]`, `[storage]`, `[agent]`, `[tracing]`, `[theme]`
+
+### Environment Variables
+
+Env vars override config file values for backward compatibility.
+
+| Variable | Config equivalent | Default | Purpose |
+|----------|-------------------|---------|---------|
+| `FAMILIAR_MODEL` | `model.default` | `ollama:nemotron-3-nano:latest` | LLM in `provider:model` format |
+| `OLLAMA_BASE_URL` | `model.ollama.base_url` | `http://localhost:11434` | Ollama server URL |
+| `FAMILIAR_DATA_DIR` | `storage.data_dir` | `~/.familiar` | Base data directory |
+| `FAMILIAR_DB_NAME` | `storage.db_name` | `familiar.db` | SQLite database filename |
+| `FAMILIAR_EXPORT_DIR` | `storage.export_dir` | `~/.familiar/exports` | Export output directory |
+| `FAMILIAR_MAX_WORKERS` | `agent.max_workers` | `12` | Parallel thread pool size |
+| `OPENAI_API_KEY` | — | — | OpenAI API key |
+| `ANTHROPIC_API_KEY` | — | — | Anthropic API key |
+| `GOOGLE_API_KEY` | — | — | Google Gemini API key |
+| `LANGSMITH_TRACING` | `tracing.enabled` | `false` | Enable LangSmith observability |
+| `LANGSMITH_API_KEY` | `tracing.api_key` | — | LangSmith auth key |
+| `LANGSMITH_PROJECT` | `tracing.project` | `familiar` | LangSmith project name |
 
 ### Supported LLM Providers
 

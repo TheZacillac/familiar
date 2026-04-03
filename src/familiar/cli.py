@@ -1,5 +1,6 @@
 """CLI entry point for the Familiar agent."""
 
+import re
 import sys
 import uuid
 import warnings
@@ -7,6 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 warnings.filterwarnings("ignore", message="Core Pydantic V1")
+
+# Configure logging before any other imports that might emit logs.
+try:
+    from arcanum._logging import configure_logging
+    configure_logging("familiar")
+except ImportError:
+    pass
 
 from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
@@ -16,28 +24,11 @@ from rich.prompt import Prompt
 from rich.table import Table
 from rich.theme import Theme
 
+from . import config
 from .agent import build_agent
 from .tools.memory_tools import get_memory
 
-# Catppuccin Mocha palette
-CATPPUCCIN = Theme(
-    {
-        "info": "#8caaee",        # Blue
-        "warning": "#e5c890",     # Yellow
-        "error": "#e78284",       # Red
-        "success": "#a6d189",     # Green
-        "prompt": "bold #a6d189", # Green
-        "title": "bold #ca9ee6",  # Mauve
-        "border": "#babbf1",      # Lavender
-        "muted": "#a5adce",       # Subtext0
-        "spinner": "#81c8be",     # Teal
-        "accent": "#f4b8e4",      # Pink
-        "peach": "#ef9f76",       # Peach
-        "sky": "#99d1db",         # Sky
-    }
-)
-
-console = Console(theme=CATPPUCCIN)
+console = Console(theme=Theme(config.theme_dict()))
 
 # Slash commands that get expanded into agent prompts ({args} is replaced)
 SLASH_COMMANDS = {
@@ -53,9 +44,9 @@ SLASH_COMMANDS = {
         "highlighting the relative strengths and weaknesses of each."
     ),
     "/secure": (
-        "Run a comprehensive security audit on {args}. Check DNSSEC status, CAA records, "
-        "SPF record, DMARC policy, SSL certificate validity, and HTTP headers. "
-        "Flag all issues with severity levels."
+        "Run a comprehensive security audit on {args}. Use security_audit for SSL health, "
+        "DNSSEC, SPF, DMARC, DKIM, and HTTP configuration. Flag all issues with severity "
+        "levels and prioritized recommendations."
     ),
     "/suggest": (
         "Suggest available domain names for the brand '{args}'. Use suggest_domains to "
@@ -114,14 +105,190 @@ SLASH_COMMANDS = {
         "CDN/WAF providers, hosting platforms, email infrastructure, DNS providers, and "
         "technology signals. Map the full external footprint."
     ),
+    "/security": (
+        "Run a comprehensive security audit on {args}. Use security_audit for SSL health, "
+        "DNSSEC, SPF, DMARC, DKIM, and HTTP configuration. Present all findings with "
+        "severity levels and prioritized recommendations."
+    ),
+    "/brand": (
+        "Run a brand protection scan for {args}. Use brand_protection_scan to check for "
+        "typosquatting variants, TLD coverage, and subdomain exposure via CT logs."
+    ),
+    "/dns": (
+        "Run a DNS health check on {args}. Use dns_health_check to audit record completeness, "
+        "nameserver redundancy, SPF, CAA, SOA configuration, and IPv6 support."
+    ),
+    "/timeline": (
+        "Build a domain timeline for {args}. Use domain_timeline to show registration, "
+        "update, SSL, and expiry events chronologically with current state summary."
+    ),
+    "/expiry": (
+        "Check expiration dates for {args}. Use expiration_alert to scan domains for "
+        "upcoming or past-due expirations with urgency levels."
+    ),
+    "/report": (
+        "Generate a polished markdown report about {args}. Use create_report to compile "
+        "your findings into an exportable document."
+    ),
+    "/vs": (
+        "Compare the security posture of these two domains: {args}. Use compare_security "
+        "to run deep side-by-side audits of SSL, DNSSEC, email auth, CAA, nameservers, "
+        "CDN/WAF, and HTTP. Present the field-by-field comparison clearly with the overall winner."
+    ),
+    "/tags": "Search your domain notebook by tag: {args}. Use tag_search.",
+    "/summary": "Generate a session summary. Use session_summary to list all domains discussed, tools used, and key findings.",
 }
 
 # Track the last agent response for /export
 _last_response: str | None = None
 
 
+def _tool_status(name: str, args: dict | None = None) -> str:
+    """Format a tool call into a human-readable status string."""
+    target = ""
+    if args:
+        for key in ("domain", "query", "name", "term", "brand"):
+            val = args.get(key)
+            if isinstance(val, str) and len(val) < 80:
+                target = val
+                break
+        if not target:
+            val = args.get("domains")
+            if isinstance(val, list) and val:
+                preview = ", ".join(str(v) for v in val[:3])
+                if len(val) > 3:
+                    preview += f" (+{len(val) - 3} more)"
+                target = preview
+
+    # Clean up tool name for display
+    display = name.replace("_", " ")
+    for prefix in ("seer ", "tome "):
+        if display.startswith(prefix):
+            display = display[len(prefix):]
+            break
+
+    if target:
+        return f"{display.capitalize()} — {target}"
+    return display.capitalize()
+
+
+def _extract_messages(update) -> list:
+    """Extract a message list from a stream update, unwrapping LangGraph channel types."""
+    if isinstance(update, dict):
+        raw = update.get("messages", [])
+    elif isinstance(update, list):
+        raw = update
+    else:
+        raw = []
+
+    # Unwrap LangGraph channel wrappers (e.g., Overwrite)
+    if not isinstance(raw, list):
+        if hasattr(raw, "value"):
+            raw = raw.value
+        if not isinstance(raw, list):
+            raw = [raw] if raw else []
+
+    return raw
+
+
+def _stream_invoke(agent, content: str, config: dict) -> str | None:
+    """Stream agent execution, showing tool activity on the status line.
+
+    With ``stream_mode="updates"`` LangGraph emits the full checkpoint
+    state (including prior turns) in every node update.  We pre-seed
+    ``seen_ids`` from the existing checkpoint so that only genuinely
+    *new* messages from this invocation are captured.
+    """
+    final_content = None
+    tool_count = 0
+
+    # Pre-seed with all message IDs already in the checkpoint so that
+    # prior-turn messages replayed in the stream are ignored.
+    seen_ids: set[str] = set()
+    try:
+        snapshot = agent.get_state(config)
+        if snapshot and snapshot.values:
+            for msg in snapshot.values.get("messages", []):
+                msg_id = getattr(msg, "id", None)
+                if msg_id:
+                    seen_ids.add(msg_id)
+    except Exception:
+        pass  # No checkpoint yet (first invocation) — seen_ids stays empty
+
+    with console.status("[spinner]Thinking...[/spinner]", spinner="dots") as status:
+        for chunk in agent.stream(
+            {"messages": [{"role": "user", "content": content}]},
+            config,
+            stream_mode="updates",
+        ):
+            if not isinstance(chunk, dict):
+                continue
+            for _node_name, update in chunk.items():
+                for msg in _extract_messages(update):
+                    # De-duplicate: skip messages we have already processed.
+                    msg_id = getattr(msg, "id", None)
+                    if msg_id:
+                        if msg_id in seen_ids:
+                            continue
+                        seen_ids.add(msg_id)
+
+                    # AI message with tool calls — show what's being invoked
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        calls = msg.tool_calls
+                        tool_count += len(calls)
+                        if len(calls) == 1:
+                            label = _tool_status(
+                                calls[0]["name"], calls[0].get("args"),
+                            )
+                            status.update(f"[spinner]{label}...[/spinner]")
+                        elif len(calls) <= 3:
+                            labels = [
+                                _tool_status(tc["name"], tc.get("args"))
+                                for tc in calls
+                            ]
+                            status.update(
+                                f"[spinner]Running {len(calls)} tools: "
+                                f"{', '.join(labels)}...[/spinner]"
+                            )
+                        else:
+                            status.update(
+                                f"[spinner]Running {len(calls)} tools...[/spinner]"
+                            )
+
+                    # Tool result returned — back to analysis
+                    elif hasattr(msg, "type") and msg.type == "tool":
+                        status.update("[spinner]Analyzing results...[/spinner]")
+
+                    # Final AI response (no tool calls) — accumulate in
+                    # case the agent emits multiple non-tool AI messages
+                    # within a single invocation.
+                    elif (
+                        hasattr(msg, "content")
+                        and msg.content
+                        and hasattr(msg, "type")
+                        and msg.type == "ai"
+                        and not getattr(msg, "tool_calls", None)
+                    ):
+                        if final_content:
+                            final_content += "\n\n" + msg.content
+                        else:
+                            final_content = msg.content
+                        if tool_count > 0:
+                            status.update(
+                                "[spinner]Composing response...[/spinner]"
+                            )
+
+    return final_content
+
+
+# Checkbox-like characters that LLMs place directly before digits
+_CHECKBOX_NUMBER_RE = re.compile(r"([□☐☑☒✓✗✘▢◻◽])\s*(\d)")
+
+
 def _print_response(content: str):
     """Render agent response as markdown in a styled panel."""
+    # Fix checkboxes jammed against numbers (e.g. "□1" → "□ 1")
+    content = _CHECKBOX_NUMBER_RE.sub(r"\1 \2", content)
     md = Markdown(content)
     console.print(
         Panel(
@@ -134,28 +301,22 @@ def _print_response(content: str):
 
 
 def _invoke_agent(agent, query: str, config: dict) -> str | None:
-    """Invoke the agent and print the response. Returns content or None."""
+    """Invoke the agent with streaming status and print the response."""
     global _last_response
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
-        with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
-            result = agent.invoke(
-                {"messages": [{"role": "user", "content": content}]},
-                config,
-            )
+        result = _stream_invoke(agent, content, config)
     except Exception as e:
         console.print(f"[error]Error: {e}[/error]")
         return None
 
-    msg = result["messages"][-1]
-    if msg.content:
+    if result:
         console.print()
-        _print_response(msg.content)
+        _print_response(result)
         console.print()
-        _last_response = msg.content
-        return msg.content
-    return None
+        _last_response = result
+    return result
 
 
 def _show_help():
@@ -177,6 +338,7 @@ def _show_help():
     table.add_row("/portfolio <d1, d2, ...>", "Portfolio health dashboard")
     table.add_row("/competitive <domain>", "Competitor domain footprint analysis")
     table.add_row("/migrate <domain>", "DNS migration pre-flight checklist")
+    table.add_row("/vs <domain_a, domain_b>", "Side-by-side security comparison")
     table.add_row("/watch <domain>", "Add domain to watchlist")
     table.add_row("/unwatch <domain>", "Remove domain from watchlist")
     table.add_row("/watchlist", "Show all watched domains")
@@ -198,10 +360,11 @@ def _handle_export(args: str):
         console.print("[warning]No response to export yet.[/warning]")
         return
 
-    filename = args.strip() or f"familiar-export-{datetime.now():%Y%m%d-%H%M%S}.md"
-    out_path = Path(filename).expanduser().resolve()
+    safe_dir = config.export_dir()
+    raw_name = args.strip() or f"familiar-export-{datetime.now():%Y%m%d-%H%M%S}.md"
+    # Restrict to filename only — strip any directory components for safety
+    out_path = safe_dir / Path(raw_name).name
     try:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_last_response, encoding="utf-8")
         console.print(f"[success]Exported to {out_path}[/success]")
     except OSError as e:
@@ -316,17 +479,13 @@ def _run_once(agent, query: str):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
-        with console.status("[spinner]Thinking...[/spinner]", spinner="dots"):
-            result = agent.invoke(
-                {"messages": [{"role": "user", "content": content}]}, config
-            )
+        result = _stream_invoke(agent, content, config)
     except Exception as e:
         console.print(f"[error]Error: {e}[/error]")
         sys.exit(1)
 
-    msg = result["messages"][-1]
-    if msg.content:
-        _print_response(msg.content)
+    if result:
+        _print_response(result)
 
 
 def _repl(agent):
