@@ -191,8 +191,23 @@ def _extract_messages(update) -> list:
     return raw
 
 
-def _stream_invoke(agent, content: str, config: dict) -> str | None:
+def _build_handoff_message(reason: str, summary: str, original_query: str) -> str:
+    """Construct the handoff message for the power model."""
+    return (
+        f"[Escalated from fast model]\n"
+        f"Reason: {reason}\n\n"
+        f"Context from initial analysis:\n{summary}\n\n"
+        f"Original user message:\n{original_query}"
+    )
+
+
+def _stream_invoke(agent, content: str, config: dict) -> dict:
     """Stream agent execution, showing tool activity on the status line.
+
+    Returns a dict with keys:
+        - "content": final AI response text (or None)
+        - "escalation": dict with "reason" and "summary" if escalation
+                        was requested (or None)
 
     With ``stream_mode="updates"`` LangGraph emits the full checkpoint
     state (including prior turns) in every node update.  We pre-seed
@@ -200,6 +215,7 @@ def _stream_invoke(agent, content: str, config: dict) -> str | None:
     *new* messages from this invocation are captured.
     """
     final_content = None
+    escalation = None
     tool_count = 0
 
     # Pre-seed with all message IDs already in the checkpoint so that
@@ -232,31 +248,48 @@ def _stream_invoke(agent, content: str, config: dict) -> str | None:
                             continue
                         seen_ids.add(msg_id)
 
-                    # AI message with tool calls — show what's being invoked
+                    # AI message with tool calls — check for escalation
                     if hasattr(msg, "tool_calls") and msg.tool_calls:
                         calls = msg.tool_calls
                         tool_count += len(calls)
-                        if len(calls) == 1:
-                            label = _tool_status(
-                                calls[0]["name"], calls[0].get("args"),
-                            )
-                            status.update(f"[spinner]{label}...[/spinner]")
-                        elif len(calls) <= 3:
-                            labels = [
-                                _tool_status(tc["name"], tc.get("args"))
-                                for tc in calls
-                            ]
-                            status.update(
-                                f"[spinner]Running {len(calls)} tools: "
-                                f"{', '.join(labels)}...[/spinner]"
-                            )
-                        else:
-                            status.update(
-                                f"[spinner]Running {len(calls)} tools...[/spinner]"
-                            )
+
+                        # Check if any call is an escalation
+                        for tc in calls:
+                            if tc["name"] == "escalate":
+                                args = tc.get("args", {})
+                                escalation = {
+                                    "reason": args.get("reason", ""),
+                                    "summary": args.get("summary", ""),
+                                }
+                                status.update(
+                                    f"[spinner]Escalating to power model — "
+                                    f"{escalation['reason']}...[/spinner]"
+                                )
+
+                        if not escalation:
+                            if len(calls) == 1:
+                                label = _tool_status(
+                                    calls[0]["name"], calls[0].get("args"),
+                                )
+                                status.update(f"[spinner]{label}...[/spinner]")
+                            elif len(calls) <= 3:
+                                labels = [
+                                    _tool_status(tc["name"], tc.get("args"))
+                                    for tc in calls
+                                ]
+                                status.update(
+                                    f"[spinner]Running {len(calls)} tools: "
+                                    f"{', '.join(labels)}...[/spinner]"
+                                )
+                            else:
+                                status.update(
+                                    f"[spinner]Running {len(calls)} tools...[/spinner]"
+                                )
 
                     # Tool result returned — back to analysis
                     elif hasattr(msg, "type") and msg.type == "tool":
+                        if escalation:
+                            return {"content": None, "escalation": escalation}
                         status.update("[spinner]Analyzing results...[/spinner]")
 
                     # Final AI response (no tool calls) — accumulate in
@@ -278,26 +311,66 @@ def _stream_invoke(agent, content: str, config: dict) -> str | None:
                                 "[spinner]Composing response...[/spinner]"
                             )
 
-    return final_content
+    return {"content": final_content, "escalation": None}
 
 
 # Checkbox-like characters that LLMs place directly before digits
 _CHECKBOX_NUMBER_RE = re.compile(r"([□☐☑☒✓✗✘▢◻◽])\s*(\d)")
 
 
-def _print_response(content: str):
+def _print_response(content: str, model_label: str | None = None):
     """Render agent response as markdown in a styled panel."""
     # Fix checkboxes jammed against numbers (e.g. "□1" → "□ 1")
     content = _CHECKBOX_NUMBER_RE.sub(r"\1 \2", content)
     md = Markdown(content)
+    title = "[title]familiar[/title]"
+    if model_label:
+        title = f"[title]familiar[/title] [muted]({model_label})[/muted]"
     console.print(
         Panel(
             md,
-            title="[title]familiar[/title]",
+            title=title,
             title_align="left",
             border_style="border",
         )
     )
+
+
+def _handle_escalation(escalation: dict, original_query: str) -> str | None:
+    """Build a power agent and re-invoke with the structured handoff."""
+    global _last_response
+    from .agent import build_power_agent
+
+    power_agent = build_power_agent()
+    if power_agent is None:
+        console.print(
+            "[warning]Escalation requested but no power model configured. "
+            "Set model.power in ~/.familiar/config.toml[/warning]"
+        )
+        return None
+
+    handoff = _build_handoff_message(
+        reason=escalation["reason"],
+        summary=escalation["summary"],
+        original_query=original_query,
+    )
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    handoff_content = f"[Current date/time: {now}]\n\n{handoff}"
+
+    power_config = {"configurable": {"thread_id": uuid.uuid4().hex}}
+    try:
+        result = _stream_invoke(power_agent, handoff_content, power_config)
+    except Exception as e:
+        console.print(f"[error]Power model error: {e}[/error]")
+        return None
+
+    if result["content"]:
+        console.print()
+        _print_response(result["content"], model_label="power")
+        console.print()
+        _last_response = result["content"]
+    return result["content"]
 
 
 def _invoke_agent(agent, query: str, config: dict) -> str | None:
@@ -311,12 +384,16 @@ def _invoke_agent(agent, query: str, config: dict) -> str | None:
         console.print(f"[error]Error: {e}[/error]")
         return None
 
-    if result:
+    # Handle escalation
+    if result["escalation"]:
+        return _handle_escalation(result["escalation"], query)
+
+    if result["content"]:
         console.print()
-        _print_response(result)
+        _print_response(result["content"])
         console.print()
-        _last_response = result
-    return result
+        _last_response = result["content"]
+    return result["content"]
 
 
 def _show_help():
@@ -484,8 +561,10 @@ def _run_once(agent, query: str):
         console.print(f"[error]Error: {e}[/error]")
         sys.exit(1)
 
-    if result:
-        _print_response(result)
+    if result.get("escalation"):
+        _handle_escalation(result["escalation"], query)
+    elif result.get("content"):
+        _print_response(result["content"])
 
 
 def _repl(agent):
