@@ -389,6 +389,9 @@ def _invoke_agent(agent, query: str, config: dict) -> str | None:
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
         result = _stream_invoke(agent, content, config)
+    except KeyboardInterrupt:
+        console.print("\n[warning]Interrupted.[/warning]")
+        return None
     except Exception as e:
         console.print(f"[error]Error: {e}[/error]")
         return None
@@ -566,6 +569,9 @@ def _run_once(agent, query: str):
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
         result = _stream_invoke(agent, content, config)
+    except KeyboardInterrupt:
+        console.print("\n[warning]Interrupted.[/warning]")
+        return
     except Exception as e:
         console.print(f"[error]Error: {e}[/error]")
         sys.exit(1)
