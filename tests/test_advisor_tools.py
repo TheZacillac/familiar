@@ -790,9 +790,11 @@ class TestExpirationAlert:
 
     @patch("familiar.tools.advisor_tools.seer")
     def test_critical_expiration_detected(self, mock_seer):
-        # Domain expiring in 3 days
+        # Domain expiring in 3 days from now
+        from datetime import datetime, timedelta, timezone
+        critical_date = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mock_seer.bulk_lookup.return_value = [
-            _whois_lookup("urgent.com", expiration_date="2026-03-30T00:00:00Z"),
+            _whois_lookup("urgent.com", expiration_date=critical_date),
         ]
 
         result = json.loads(expiration_alert.invoke({"domains": "urgent.com"}))
