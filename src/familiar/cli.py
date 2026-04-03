@@ -16,6 +16,15 @@ try:
 except ImportError:
     pass
 
+# Suppress Rust tracing warn-level noise from seer/tome cores.
+# The pyo3-log bridge forwards Rust tracing events into Python logging
+# using the Rust module path as the logger name. Operational warnings
+# (RDAP fallbacks, retry exhaustion) are expected during normal lookups
+# and should not clutter the REPL.
+import logging
+logging.getLogger("seer_core").setLevel(logging.ERROR)
+logging.getLogger("tome_core").setLevel(logging.ERROR)
+
 from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
 from rich.markdown import Markdown
