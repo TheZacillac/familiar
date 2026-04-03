@@ -8,18 +8,18 @@ from familiar import config
 class TestFastModelId:
     """fast_model_id returns model.fast, falling back to model.default."""
 
-    def test_returns_fast_when_set(self, monkeypatch):
+    def test_returns_fast_when_set(self):
         config.reload()
         config._cfg["model"]["fast"] = "ollama:gemma4:e4b"
         assert config.fast_model_id() == "ollama:gemma4:e4b"
 
-    def test_falls_back_to_default(self, monkeypatch):
+    def test_falls_back_to_default(self):
         config.reload()
         config._cfg["model"].pop("fast", None)
         config._cfg["model"]["default"] = "ollama:fallback:latest"
         assert config.fast_model_id() == "ollama:fallback:latest"
 
-    def test_falls_back_to_hardcoded(self, monkeypatch):
+    def test_falls_back_to_hardcoded(self):
         config.reload()
         config._cfg["model"].pop("fast", None)
         config._cfg["model"].pop("default", None)
