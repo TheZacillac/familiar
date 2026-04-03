@@ -3,12 +3,14 @@
 # Environment variables override these values (see .env.example).
 
 [model]
-# LLM in provider:model format. Supported providers:
-#   ollama:nemotron-3-nano:latest   (local, default)
-#   openai:gpt-4o                   (requires OPENAI_API_KEY)
-#   anthropic:claude-sonnet-4-20250514       (requires ANTHROPIC_API_KEY)
-#   google_genai:gemini-2.5-pro     (requires GOOGLE_API_KEY)
-default = "ollama:gemma4:31b"
+# Two-tier model system: "fast" handles most queries, "power" is called
+# when the fast model decides it needs backup.
+# Format: provider:model (e.g., ollama:gemma4:e4b, openai:gpt-4o)
+fast = "ollama:gemma4:e4b"
+power = "ollama:gemma4:31b"
+
+# Fallback if "fast" is not set (backward compatible):
+# default = "ollama:nemotron-3-nano:latest"
 
 [model.ollama]
 base_url = "http://localhost:11434"
