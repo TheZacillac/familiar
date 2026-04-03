@@ -15,6 +15,8 @@ from pathlib import Path
 DEFAULTS = {
     "model": {
         "default": "ollama:nemotron-3-nano:latest",
+        "fast": "",
+        "power": "",
         "ollama": {
             "base_url": "http://localhost:11434",
         },
@@ -96,6 +98,10 @@ def _apply_env_overrides(cfg: dict) -> dict:
         cfg.setdefault("storage", {})["export_dir"] = val
     if val := os.environ.get("FAMILIAR_MAX_WORKERS"):
         cfg.setdefault("agent", {})["max_workers"] = int(val)
+    if val := os.environ.get("FAMILIAR_MODEL_FAST"):
+        cfg.setdefault("model", {})["fast"] = val
+    if val := os.environ.get("FAMILIAR_MODEL_POWER"):
+        cfg.setdefault("model", {})["power"] = val
 
     # Tracing env vars (LangSmith convention)
     tracing_val = os.environ.get("LANGSMITH_TRACING")
@@ -173,9 +179,14 @@ def model_id() -> str:
     return get("model", "default", "ollama:nemotron-3-nano:latest")
 
 
-def model_kwargs() -> dict:
-    """Provider-specific kwargs derived from config."""
-    mid = model_id()
+def model_kwargs(model_id_override: str | None = None) -> dict:
+    """Provider-specific kwargs derived from config.
+
+    Args:
+        model_id_override: If provided, derive kwargs for this model instead
+            of the configured fast model.
+    """
+    mid = model_id_override or fast_model_id()
     kwargs = {}
     provider = mid.split(":")[0] if ":" in mid else None
     if provider == "ollama":
@@ -183,6 +194,20 @@ def model_kwargs() -> dict:
         if base_url:
             kwargs["base_url"] = base_url
     return kwargs
+
+
+def fast_model_id() -> str:
+    """The fast-tier model. Falls back to model.default."""
+    fast = get("model", "fast", "")
+    if fast:
+        return fast
+    return model_id()
+
+
+def power_model_id() -> str | None:
+    """The power-tier model for escalation, or None if not configured."""
+    power = get("model", "power", "")
+    return power or None
 
 
 def max_workers() -> int:
