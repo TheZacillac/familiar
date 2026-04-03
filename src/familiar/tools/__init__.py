@@ -1,6 +1,7 @@
 """All LangChain tools for the Familiar agent."""
 
 from .advisor_tools import ADVISOR_TOOLS, COMPOSITE_ADVISOR_TOOLS
+from .escalation_tools import ESCALATION_TOOLS
 from .memory_tools import MEMORY_TOOLS, SNAPSHOT_TOOLS, WORKFLOW_TOOLS
 from .pentest_tools import PENTEST_TOOLS
 from .security_tools import SECURITY_TOOLS
@@ -17,6 +18,7 @@ ALL_TOOLS = (
     + MEMORY_TOOLS
     + WORKFLOW_TOOLS
     + SNAPSHOT_TOOLS
+    + ESCALATION_TOOLS
 )
 
 __all__ = [
@@ -30,4 +32,5 @@ __all__ = [
     "MEMORY_TOOLS",
     "WORKFLOW_TOOLS",
     "SNAPSHOT_TOOLS",
+    "ESCALATION_TOOLS",
 ]

@@ -10,9 +10,12 @@ from familiar.tools import (
     ALL_TOOLS,
     ADVISOR_TOOLS,
     COMPOSITE_ADVISOR_TOOLS,
+    ESCALATION_TOOLS,
     MEMORY_TOOLS,
     PENTEST_TOOLS,
+    SECURITY_TOOLS,
     SEER_TOOLS,
+    SNAPSHOT_TOOLS,
     TOME_TOOLS,
     WORKFLOW_TOOLS,
 )
@@ -31,8 +34,11 @@ class TestToolListIntegrity:
             + len(ADVISOR_TOOLS)
             + len(COMPOSITE_ADVISOR_TOOLS)
             + len(PENTEST_TOOLS)
+            + len(SECURITY_TOOLS)
             + len(MEMORY_TOOLS)
             + len(WORKFLOW_TOOLS)
+            + len(SNAPSHOT_TOOLS)
+            + len(ESCALATION_TOOLS)
         )
         assert len(ALL_TOOLS) == expected
 
@@ -51,10 +57,10 @@ class TestToolGroupCounts:
     """Verify each tool group has the expected number of tools."""
 
     def test_seer_tools_count(self):
-        assert len(SEER_TOOLS) == 20
+        assert len(SEER_TOOLS) == 21
 
     def test_tome_tools_count(self):
-        assert len(TOME_TOOLS) == 9
+        assert len(TOME_TOOLS) == 10
 
     def test_advisor_tools_count(self):
         assert len(ADVISOR_TOOLS) == 6
@@ -70,6 +76,9 @@ class TestToolGroupCounts:
 
     def test_workflow_tools_count(self):
         assert len(WORKFLOW_TOOLS) == 4
+
+    def test_escalation_tools_count(self):
+        assert len(ESCALATION_TOOLS) == 1
 
 
 class TestToolCallability:
@@ -103,6 +112,7 @@ class TestExpectedToolNames:
         "watchlist_check",
         "create_report",
         "compare_domains",
+        "escalate",
     ])
     def test_tool_present(self, expected_name):
         names = {t.name for t in ALL_TOOLS}
