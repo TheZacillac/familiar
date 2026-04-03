@@ -104,6 +104,19 @@ Users may type these in the REPL — respond as if they asked the full question:
 /assess, /compare, /secure, /suggest, /acquire, /portfolio, /competitive, /migrate, \
 /watch, /unwatch, /watchlist, /check, /domains, /security, /brand, /dns, /timeline, \
 /expiry, /report, /tags, /summary, /pentest, /takeover, /headers, /recon, /vs
+
+## Model Escalation
+
+You have access to an `escalate` tool. Use it when a task exceeds your capabilities — \
+for example, complex multi-domain analysis, nuanced security assessments requiring careful \
+cross-referencing of multiple tool results, detailed advisory opinions, or any task where \
+you are uncertain about the quality of your answer. When in doubt, escalate — it is better \
+to hand off than to give a weak answer.
+
+When escalating, provide:
+- **reason**: a concise explanation of why this task needs a more capable model
+- **summary**: a structured handoff including the user's original intent, what you have \
+learned so far from any tool calls, and what the power model should focus on
 """
 
 
@@ -203,7 +216,7 @@ def _configure_tracing():
 
 
 def build_agent(checkpointer=None):
-    """Construct and return the LangGraph Deep Agent.
+    """Construct and return the LangGraph Deep Agent using the fast model.
 
     Args:
         checkpointer: Optional LangGraph checkpointer for persisting conversation
@@ -215,7 +228,7 @@ def build_agent(checkpointer=None):
     _configure_tracing()
 
     model = init_chat_model(
-        model=config.model_id(),
+        model=config.fast_model_id(),
         **config.model_kwargs(),
     )
 
@@ -224,6 +237,33 @@ def build_agent(checkpointer=None):
         tools=ALL_TOOLS,
         system_prompt=_build_system_prompt(),
         checkpointer=checkpointer,
+    )
+
+    return agent
+
+
+def build_power_agent():
+    """Construct a stateless agent using the power model, without the escalate tool.
+
+    Returns None if no power model is configured.
+    """
+    power_id = config.power_model_id()
+    if not power_id:
+        return None
+
+    model = init_chat_model(
+        model=power_id,
+        **config.model_kwargs(power_id),
+    )
+
+    # All tools except escalate — power model is the terminal tier
+    from .tools.escalation_tools import escalate
+    power_tools = [t for t in ALL_TOOLS if t is not escalate]
+
+    agent = create_deep_agent(
+        model=model,
+        tools=power_tools,
+        system_prompt=_build_system_prompt(),
     )
 
     return agent
