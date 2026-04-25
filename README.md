@@ -23,6 +23,7 @@ pip install -e ".[ollama]"      # Local models via Ollama (default)
 pip install -e ".[openai]"      # OpenAI API
 pip install -e ".[anthropic]"   # Anthropic API
 pip install -e ".[google]"      # Google Gemini API
+pip install -e ".[claude]"      # Claude Agent SDK (separate engine, see below)
 pip install -e ".[all]"         # All providers
 ```
 
@@ -67,6 +68,44 @@ Set `FAMILIAR_MODEL` in `.env` using `provider:model` format:
 |---|---|---|
 | `FAMILIAR_MODEL` | `ollama:nemotron-3-nano:latest` | LLM to use (must support tool calling) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (only for ollama provider) |
+
+## Claude Agent SDK engine (alternate)
+
+Familiar ships with a parallel engine that drives the same tools through Anthropic's [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) instead of LangGraph Deep Agents. It runs side-by-side with the LangChain build — same tools, same memory, same slash commands.
+
+```bash
+pip install -e ".[claude]"
+familiar-claude                         # REPL
+familiar-claude "audit example.com"     # one-shot
+```
+
+`FAMILIAR_MODEL` does not apply here. The Claude SDK uses Claude only; pick the model with `FAMILIAR_CLAUDE_MODEL` (default: `claude-sonnet-4-6`).
+
+### Authentication
+
+Pick **one** of the following — the SDK resolves them in this order:
+
+| Method | When to use | Setup |
+|---|---|---|
+| **Subscription token** (Pro/Max/Team/Enterprise) | You already pay for Claude and want this to bill against your plan | Run `claude setup-token` once, then `export CLAUDE_CODE_OAUTH_TOKEN=...` |
+| **API key** (per-token billing) | You want pay-as-you-go through the Anthropic Console | `export ANTHROPIC_API_KEY=...` from [console.anthropic.com](https://console.anthropic.com) |
+| **Bedrock / Vertex / Foundry** | Running through your cloud provider's Anthropic offering | `CLAUDE_CODE_USE_BEDROCK=1` (or `_VERTEX`, `_FOUNDRY`) plus the provider's standard credentials |
+
+> The SDK does **not** automatically use credentials from the Claude Desktop app or a stored `claude login`. Anthropic intentionally blocks third-party tools (including this SDK) from re-using subscription cookies. The `claude setup-token` flow is the supported path for using a subscription from a script.
+
+For a guided one-shot of the subscription flow:
+
+```bash
+./scripts/setup-claude-token.sh
+```
+
+The script checks for the `claude` CLI, runs `setup-token` (which opens a browser), prompts you to paste the printed token, and writes it to `.env` as `CLAUDE_CODE_OAUTH_TOKEN`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `FAMILIAR_CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model id used by `familiar-claude` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | — | Long-lived subscription token (`claude setup-token`) |
+| `ANTHROPIC_API_KEY` | — | Per-token API key from console.anthropic.com |
 
 ## Observability (optional)
 

@@ -22,14 +22,16 @@ ollama = ["langchain-ollama>=0.3"]
 openai = ["langchain-openai>=0.3"]
 anthropic = ["langchain-anthropic>=0.3"]
 google = ["langchain-google-genai>=4.0"]
+claude = ["claude-agent-sdk>=0.1.0"]
 all = [
-    "familiar[ollama,openai,anthropic,google]",
+    "familiar[ollama,openai,anthropic,google,claude]",
 ]
 tracing = ["langsmith>=0.3"]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
 
 [project.scripts]
 familiar = "familiar.cli:main"
+familiar-claude = "familiar.cli_claude:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/familiar"]
