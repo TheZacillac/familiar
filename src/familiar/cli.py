@@ -326,11 +326,36 @@ def _stream_invoke(agent, content: str, config: dict) -> dict:
 # Checkbox-like characters that LLMs place directly before digits
 _CHECKBOX_NUMBER_RE = re.compile(r"([□☐☑☒✓✗✘▢◻◽])\s*(\d)")
 
+# LaTeX math entities that some models emit instead of Unicode.
+# Rich Markdown does not render LaTeX, so $...$ leaks through verbatim.
+_LATEX_ENTITIES = {
+    r"\rightarrow": "→", r"\to": "→", r"\Rightarrow": "⇒",
+    r"\leftarrow": "←", r"\Leftarrow": "⇐", r"\leftrightarrow": "↔",
+    r"\uparrow": "↑", r"\downarrow": "↓",
+    r"\cdot": "·", r"\times": "×", r"\div": "÷", r"\pm": "±", r"\mp": "∓",
+    r"\le": "≤", r"\leq": "≤", r"\ge": "≥", r"\geq": "≥",
+    r"\ne": "≠", r"\neq": "≠", r"\approx": "≈", r"\equiv": "≡",
+    r"\infty": "∞", r"\sum": "∑", r"\prod": "∏", r"\partial": "∂",
+    r"\alpha": "α", r"\beta": "β", r"\gamma": "γ", r"\delta": "δ",
+    r"\epsilon": "ε", r"\lambda": "λ", r"\mu": "μ", r"\pi": "π",
+    r"\sigma": "σ", r"\tau": "τ", r"\phi": "φ", r"\omega": "ω",
+}
+_LATEX_RE = re.compile(
+    r"\$\s*(" + "|".join(re.escape(k) for k in _LATEX_ENTITIES) + r")\s*\$"
+)
+
+
+def _strip_latex(content: str) -> str:
+    """Replace `$\\rightarrow$`-style LaTeX entities with Unicode equivalents."""
+    return _LATEX_RE.sub(lambda m: _LATEX_ENTITIES[m.group(1)], content)
+
 
 def _print_response(content: str, model_label: str | None = None):
     """Render agent response as markdown in a styled panel."""
     # Fix checkboxes jammed against numbers (e.g. "□1" → "□ 1")
     content = _CHECKBOX_NUMBER_RE.sub(r"\1 \2", content)
+    # Replace LaTeX math entities Rich Markdown doesn't render
+    content = _strip_latex(content)
     md = Markdown(content)
     title = "[title]familiar[/title]"
     if model_label:
