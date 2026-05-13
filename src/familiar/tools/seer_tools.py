@@ -60,6 +60,32 @@ def seer_rdap_domain(domain: str) -> str:
 
 
 @tool
+def seer_rdap(query: str) -> str:
+    """Auto-routing RDAP lookup for a domain, IP address, or ASN. Classification happens in Rust so domains starting with 'AS' (e.g. as1234.io) are not misrouted to the ASN endpoint. Use when the query type is not known in advance."""
+    logger.debug("seer_rdap called: query=%s", query)
+    try:
+        return json.dumps(seer.rdap(query), default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_info(domain: str) -> str:
+    """Lightweight domain metadata summary. Returns a flat, registrar-agnostic view (domain, registrar, creation/expiration, nameservers, status) derived from the smart lookup. Cheaper than seer_lookup when only a summary is needed."""
+    start = time.monotonic()
+    logger.debug("seer_info called: domain=%s", domain)
+    try:
+        result = seer.info(domain)
+        elapsed = (time.monotonic() - start) * 1000
+        logger.info("seer_info completed: domain=%s elapsed_ms=%.1f", domain, elapsed)
+        return json.dumps(result, default=str)
+    except Exception as e:
+        elapsed = (time.monotonic() - start) * 1000
+        logger.warning("seer_info failed: domain=%s elapsed_ms=%.1f error=%s", domain, elapsed, e)
+        return json.dumps({"error": str(e)})
+
+
+@tool
 def seer_rdap_ip(ip: str) -> str:
     """Look up RDAP information for an IP address. Returns network range, country, and responsible organization."""
     logger.debug("seer_rdap_ip called: ip=%s", ip)
@@ -285,21 +311,45 @@ def seer_diff(domain_a: str, domain_b: str) -> str:
 
 
 @tool
-def seer_bulk_availability(domains: str, concurrency: int = 10) -> str:
-    """Check domain registration availability in bulk. Pass domains as a JSON list
-    of strings. Each result includes available (bool), confidence level, and check
-    method. Uses concurrent RDAP/WHOIS checks for speed."""
-    logger.debug("seer_bulk_availability called: concurrency=%d", concurrency)
+def seer_bulk_availability(domains: list[str] | str, concurrency: int = 10) -> str:
+    """Check domain registration availability in bulk. Each result includes available (bool), confidence level, and check method. Uses concurrent RDAP/WHOIS checks for speed. Recommended max 100 domains for performance."""
+    concurrency = max(1, min(concurrency, 50))
+    # The `| str` in the type hint is what lets Pydantic accept a JSON-string
+    # literal so the shim below stays reachable for LLMs that emit one.
+    if isinstance(domains, str):
+        try:
+            domains = json.loads(domains)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "domains must be a list of strings"})
+    logger.debug("seer_bulk_availability called: count=%d concurrency=%d", len(domains), concurrency)
     try:
-        domain_list = json.loads(domains) if isinstance(domains, str) else domains
-        return json.dumps(seer.bulk_availability(domain_list, concurrency), default=str)
+        return json.dumps(seer.bulk_availability(domains, concurrency), default=str)
     except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool
+def seer_bulk_info(domains: list[str], concurrency: int = 10) -> str:
+    """Lightweight bulk metadata lookup for multiple domains. Returns a flat domain-info summary (registrar, dates, nameservers, status) per domain. Cheaper than seer_bulk_lookup when only a summary is needed. Recommended max 100 domains for performance."""
+    concurrency = max(1, min(concurrency, 50))
+    start = time.monotonic()
+    logger.debug("seer_bulk_info called: count=%d concurrency=%d", len(domains), concurrency)
+    try:
+        result = seer.bulk_info(domains, concurrency)
+        elapsed = (time.monotonic() - start) * 1000
+        logger.info("seer_bulk_info completed: count=%d elapsed_ms=%.1f", len(domains), elapsed)
+        return json.dumps(result, default=str)
+    except Exception as e:
+        elapsed = (time.monotonic() - start) * 1000
+        logger.warning("seer_bulk_info failed: count=%d elapsed_ms=%.1f error=%s", len(domains), elapsed, e)
         return json.dumps({"error": str(e)})
 
 
 SEER_TOOLS = [
     seer_lookup,
+    seer_info,
     seer_whois,
+    seer_rdap,
     seer_rdap_domain,
     seer_rdap_ip,
     seer_rdap_asn,
@@ -314,6 +364,7 @@ SEER_TOOLS = [
     seer_dns_follow,
     seer_diff,
     seer_bulk_lookup,
+    seer_bulk_info,
     seer_bulk_whois,
     seer_bulk_dig,
     seer_bulk_status,

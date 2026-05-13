@@ -20,8 +20,8 @@ familiar/
     ├── memory.py                 # SQLite persistence (domain notebook, watchlist, prefs)
     ├── utils.py                  # Shared utilities (safe_call, days_until)
     └── tools/
-        ├── __init__.py           # Exports ALL_TOOLS (60 total)
-        ├── seer_tools.py         # 20 Seer tools (LangChain @tool wrappers)
+        ├── __init__.py           # Exports ALL_TOOLS (64 total)
+        ├── seer_tools.py         # 24 Seer tools (LangChain @tool wrappers)
         ├── tome_tools.py         # 9 Tome tools (LangChain @tool wrappers)
         ├── advisor_tools.py      # 11 Advisory tools (6 strategic + 5 composite)
         ├── pentest_tools.py      # 7 Pentest tools (security scanning composites)
@@ -68,15 +68,15 @@ Catppuccin Mocha palette with Rich library:
 
 ---
 
-## Tools (61 total)
+## Tools (65 total)
 
-All wrapped with `@langchain_core.tools.tool`, return JSON strings.
+All wrapped with `@langchain_core.tools.tool`, return JSON strings. Seer surface tracks `seer>=0.24.0`.
 
-### Seer Tools (20) — `seer_tools.py`
+### Seer Tools (24) — `seer_tools.py`
 
-**Single:** `seer_lookup`, `seer_whois`, `seer_rdap_domain`, `seer_rdap_ip`, `seer_rdap_asn`, `seer_dig`, `seer_propagation`, `seer_status`, `seer_availability`, `seer_subdomains`, `seer_ssl`, `seer_dnssec`, `seer_dns_compare`, `seer_dns_follow`, `seer_diff`
+**Single:** `seer_lookup`, `seer_info`, `seer_whois`, `seer_rdap`, `seer_rdap_domain`, `seer_rdap_ip`, `seer_rdap_asn`, `seer_dig`, `seer_propagation`, `seer_status`, `seer_availability`, `seer_subdomains`, `seer_ssl`, `seer_dnssec`, `seer_dns_compare`, `seer_dns_follow`, `seer_diff`
 
-**Bulk (max 100 domains):** `seer_bulk_lookup`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`
+**Bulk (max 100 domains):** `seer_bulk_lookup`, `seer_bulk_info`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`, `seer_bulk_availability`
 
 ### Tome Tools (9) — `tome_tools.py`
 
@@ -154,7 +154,7 @@ Uses LangChain's `init_chat_model()` for provider abstraction.
 - `deepagents>=0.4` — LangChain agent framework (planning, delegation)
 - `rich>=13.0` — Terminal UI with markdown rendering
 - `scrolls>=0.1.0` — Skill documentation loader
-- `seer>=0.10.2` — PyO3 domain intelligence bindings
+- `seer>=0.24.0` — PyO3 domain intelligence bindings
 - `tome>=0.1.0` — PyO3 reference data bindings
 
 **Optional LLM providers:**

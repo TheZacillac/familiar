@@ -57,7 +57,7 @@ class TestToolGroupCounts:
     """Verify each tool group has the expected number of tools."""
 
     def test_seer_tools_count(self):
-        assert len(SEER_TOOLS) == 21
+        assert len(SEER_TOOLS) == 24
 
     def test_tome_tools_count(self):
         assert len(TOME_TOOLS) == 10
