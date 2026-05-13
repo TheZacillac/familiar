@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 import seer
 from langchain_core.tools import tool
 
+from ..seer_shape import record_field, record_text, record_value_dict
 from ..utils import parallel_calls, safe_call
 
 # --- DNS-based blocklist providers ---
@@ -41,12 +42,7 @@ def _reverse_ip(ip: str) -> str:
 
 def _extract_address(record) -> str:
     """Extract IP address string from a seer dig record."""
-    if isinstance(record, dict):
-        data = record.get("data", record)
-        if isinstance(data, dict):
-            return data.get("address", "")
-        return str(data)
-    return str(record)
+    return record_field(record, "address")
 
 
 @tool
@@ -224,12 +220,7 @@ def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
 
 def _extract_nameserver(record) -> str:
     """Extract nameserver hostname from a seer dig NS record."""
-    if isinstance(record, dict):
-        data = record.get("data", record)
-        if isinstance(data, dict):
-            return data.get("nameserver", "").rstrip(".")
-        return str(data).rstrip(".")
-    return str(record).rstrip(".")
+    return record_field(record, "nameserver").rstrip(".")
 
 
 @tool
@@ -297,12 +288,7 @@ def zone_transfer_test(domain: str) -> str:
 
 def _extract_txt_value(record) -> str:
     """Extract text value from a seer dig TXT record."""
-    if isinstance(record, dict):
-        data = record.get("data", record)
-        if isinstance(data, dict):
-            return data.get("text", data.get("value", str(data)))
-        return str(data)
-    return str(record)
+    return record_text(record)
 
 
 def _fetch_mta_sts_policy(domain: str, timeout: float = 5.0) -> dict:
@@ -501,47 +487,49 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
     parsed_tlsa = []
     if tlsa_records and isinstance(tlsa_records, list):
         for rec in tlsa_records:
-            if isinstance(rec, dict):
-                data = rec.get("data", rec)
-                if isinstance(data, dict):
-                    usage = data.get("usage", data.get("certificate_usage"))
-                    selector = data.get("selector")
-                    matching = data.get("matching_type")
-                    cert_data = data.get("certificate_data", data.get("certificate_association_data", ""))
+            fields = record_value_dict(rec)
+            if fields is not None:
+                usage = fields.get("usage", fields.get("certificate_usage"))
+                selector = fields.get("selector")
+                matching = fields.get("matching_type")
+                cert_data = fields.get(
+                    "certificate_data",
+                    fields.get("certificate_association_data", ""),
+                )
 
-                    entry = {
-                        "usage": usage,
-                        "usage_description": _TLSA_USAGE.get(usage, f"Unknown ({usage})"),
-                        "selector": selector,
-                        "selector_description": _TLSA_SELECTOR.get(selector, f"Unknown ({selector})"),
-                        "matching_type": matching,
-                        "matching_description": _TLSA_MATCHING.get(matching, f"Unknown ({matching})"),
-                        "certificate_data": str(cert_data)[:64] + ("..." if len(str(cert_data)) > 64 else ""),
-                    }
-                    parsed_tlsa.append(entry)
+                entry = {
+                    "usage": usage,
+                    "usage_description": _TLSA_USAGE.get(usage, f"Unknown ({usage})"),
+                    "selector": selector,
+                    "selector_description": _TLSA_SELECTOR.get(selector, f"Unknown ({selector})"),
+                    "matching_type": matching,
+                    "matching_description": _TLSA_MATCHING.get(matching, f"Unknown ({matching})"),
+                    "certificate_data": str(cert_data)[:64] + ("..." if len(str(cert_data)) > 64 else ""),
+                }
+                parsed_tlsa.append(entry)
 
-                    if usage in (0, 1):
-                        findings.append({
-                            "severity": "INFO",
-                            "finding": f"TLSA usage {usage} (PKIX-based) — requires both DANE match and CA validation",
-                            "detail": _TLSA_USAGE.get(usage, ""),
-                            "recommendation": "Ensure the certificate chain satisfies both PKIX and DANE constraints",
-                        })
-                    elif usage == 3:
-                        findings.append({
-                            "severity": "INFO",
-                            "finding": "TLSA usage 3 (DANE-EE) — strongest DANE mode, bypasses CA system",
-                            "detail": "The leaf certificate must match the TLSA record exactly. PKIX validation is not required.",
-                            "recommendation": "Update the TLSA record whenever the certificate is renewed",
-                        })
+                if usage in (0, 1):
+                    findings.append({
+                        "severity": "INFO",
+                        "finding": f"TLSA usage {usage} (PKIX-based) — requires both DANE match and CA validation",
+                        "detail": _TLSA_USAGE.get(usage, ""),
+                        "recommendation": "Ensure the certificate chain satisfies both PKIX and DANE constraints",
+                    })
+                elif usage == 3:
+                    findings.append({
+                        "severity": "INFO",
+                        "finding": "TLSA usage 3 (DANE-EE) — strongest DANE mode, bypasses CA system",
+                        "detail": "The leaf certificate must match the TLSA record exactly. PKIX validation is not required.",
+                        "recommendation": "Update the TLSA record whenever the certificate is renewed",
+                    })
 
-                    if matching == 0:
-                        findings.append({
-                            "severity": "LOW",
-                            "finding": "TLSA uses full certificate match (matching type 0) instead of a hash",
-                            "detail": "Full certificate data in DNS increases record size and is less common",
-                            "recommendation": "Consider SHA-256 (matching type 1) for smaller, more standard TLSA records",
-                        })
+                if matching == 0:
+                    findings.append({
+                        "severity": "LOW",
+                        "finding": "TLSA uses full certificate match (matching type 0) instead of a hash",
+                        "detail": "Full certificate data in DNS increases record size and is less common",
+                        "recommendation": "Consider SHA-256 (matching type 1) for smaller, more standard TLSA records",
+                    })
 
     dane_configured = len(parsed_tlsa) > 0
 
@@ -746,14 +734,9 @@ def website_fingerprint(domain: str) -> str:
     # DNS-based detection (CNAME fingerprinting)
     if cname_records and isinstance(cname_records, list):
         for rec in cname_records:
-            if isinstance(rec, dict):
-                data = rec.get("data", rec)
-                target = ""
-                if isinstance(data, dict):
-                    target = data.get("target", data.get("cname", "")).lower().rstrip(".")
-                else:
-                    target = str(data).lower().rstrip(".")
-
+            target = record_field(rec, "target") or record_field(rec, "cname")
+            target = target.lower().rstrip(".")
+            if target:
                 if "shopify" in target:
                     _add_tech("Shopify", "E-Commerce Platform", f"CNAME → {target}")
                 elif "squarespace" in target:

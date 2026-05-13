@@ -9,6 +9,7 @@ import seer
 from langchain_core.tools import tool
 
 from ..memory import Memory
+from ..seer_shape import record_field
 from ..utils import days_until as _days_until, parallel_calls, safe_call
 
 # Module-level singleton, initialized lazily with double-checked locking
@@ -379,10 +380,9 @@ def snapshot_domain(domain: str) -> str:
     if ns_records and isinstance(ns_records, list):
         ns_list = []
         for rec in ns_records:
-            if isinstance(rec, dict):
-                data = rec.get("data", rec)
-                ns = data.get("nameserver", str(data)) if isinstance(data, dict) else str(data)
-                ns_list.append(ns.rstrip("."))
+            ns = record_field(rec, "nameserver").rstrip(".")
+            if ns:
+                ns_list.append(ns)
         snapshot_data["nameservers"] = sorted(ns_list)
 
     # HTTP/SSL status

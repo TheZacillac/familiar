@@ -7,6 +7,7 @@ import seer
 import tome
 from langchain_core.tools import tool
 
+from ..seer_shape import record_field, record_text, record_value_dict
 from ..utils import days_until as _days_until, parallel_calls, safe_call
 
 
@@ -331,7 +332,7 @@ def appraise_domain(domain: str) -> str:
     signals["total_dns_records"] = record_count
     signals["has_email_infrastructure"] = bool(dns_records.get("MX"))
     signals["has_spf"] = any(
-        "v=spf1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
+        "v=spf1" in record_text(r).lower()
         for r in (dns_records.get("TXT") or [])
     )
 
@@ -735,24 +736,18 @@ def audit_portfolio(domains: str) -> str:
 
         if ns_records and isinstance(ns_records, list):
             ns_key = str(sorted(
-                r.get("data", {}).get("nameserver", str(r)) if isinstance(r, dict) else str(r)
+                record_field(r, "nameserver") or str(r)
                 for r in ns_records
             ))
             nameserver_sets[ns_key] = nameserver_sets.get(ns_key, 0) + 1
 
         has_spf = False
         if txt_records and isinstance(txt_records, list):
-            has_spf = any(
-                "v=spf1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
-                for r in txt_records
-            )
+            has_spf = any("v=spf1" in record_text(r).lower() for r in txt_records)
 
         has_dmarc = False
         if dmarc_records and isinstance(dmarc_records, list):
-            has_dmarc = any(
-                "v=dmarc1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
-                for r in dmarc_records
-            )
+            has_dmarc = any("v=dmarc1" in record_text(r).lower() for r in dmarc_records)
 
         if mx_records:
             if not has_spf:
@@ -1078,31 +1073,31 @@ def security_audit(domain: str) -> str:
 
     if txt_records and isinstance(txt_records, list):
         for record in txt_records:
-            record_text = record.get("data", {}).get("text", "") if isinstance(record, dict) else str(record)
-            record_str = record_text.lower()
-            if "v=spf1" in record_str:
-                email_security["spf"] = {"found": True, "record": record_text}
+            txt = record_text(record)
+            txt_lower = txt.lower()
+            if "v=spf1" in txt_lower:
+                email_security["spf"] = {"found": True, "record": txt}
                 # Check for common SPF issues
-                if "-all" in record_str:
+                if "-all" in txt_lower:
                     email_security["spf"]["policy"] = "strict"
-                elif "~all" in record_str:
+                elif "~all" in txt_lower:
                     email_security["spf"]["policy"] = "softfail"
-                elif "?all" in record_str:
+                elif "?all" in txt_lower:
                     email_security["spf"]["policy"] = "neutral"
-                elif "+all" in record_str:
+                elif "+all" in txt_lower:
                     email_security["spf"]["policy"] = "permissive_INSECURE"
 
     if dmarc_records and isinstance(dmarc_records, list):
         for record in dmarc_records:
-            record_text = record.get("data", {}).get("text", "") if isinstance(record, dict) else str(record)
-            record_str = record_text.lower()
-            if "v=dmarc1" in record_str:
-                email_security["dmarc"] = {"found": True, "record": record_text}
-                if "p=reject" in record_str:
+            txt = record_text(record)
+            txt_lower = txt.lower()
+            if "v=dmarc1" in txt_lower:
+                email_security["dmarc"] = {"found": True, "record": txt}
+                if "p=reject" in txt_lower:
                     email_security["dmarc"]["policy"] = "reject"
-                elif "p=quarantine" in record_str:
+                elif "p=quarantine" in txt_lower:
                     email_security["dmarc"]["policy"] = "quarantine"
-                elif "p=none" in record_str:
+                elif "p=none" in txt_lower:
                     email_security["dmarc"]["policy"] = "none_MONITORING_ONLY"
 
     # HTTP security check via status (status_data already fetched above)
@@ -1328,8 +1323,8 @@ def dns_health_check(domain: str) -> str:
     nameserver_consistency = None
     ns_records = records_found.get("NS")
     if ns_records and isinstance(ns_records, list) and len(ns_records) >= 2:
-        ns_a = (ns_records[0].get("data", {}).get("nameserver", "") if isinstance(ns_records[0], dict) else str(ns_records[0])).rstrip(".")
-        ns_b = (ns_records[1].get("data", {}).get("nameserver", "") if isinstance(ns_records[1], dict) else str(ns_records[1])).rstrip(".")
+        ns_a = record_field(ns_records[0], "nameserver").rstrip(".")
+        ns_b = record_field(ns_records[1], "nameserver").rstrip(".")
         compare_result = safe_call(seer.dns_compare, domain, "A", ns_a, ns_b) if ns_a and ns_b else None
         if compare_result:
             nameserver_consistency = {
@@ -1344,7 +1339,7 @@ def dns_health_check(domain: str) -> str:
     if records_found.get("TXT") and isinstance(records_found["TXT"], list):
         spf_records = [
             r for r in records_found["TXT"]
-            if "v=spf1" in (r.get("data", {}).get("text", "") if isinstance(r, dict) else str(r)).lower()
+            if "v=spf1" in record_text(r).lower()
         ]
         if spf_records:
             spf_found = True
@@ -1719,13 +1714,13 @@ def _audit_one(domain: str) -> dict:
     email_section = {"has_mx": bool(mx_records), "spf": "missing", "dmarc": "missing"}
     if txt_records and isinstance(txt_records, list):
         for rec in txt_records:
-            txt = rec.get("data", {}).get("text", "") if isinstance(rec, dict) else str(rec)
-            if "v=spf1" in txt.lower():
-                if "-all" in txt.lower():
+            txt = record_text(rec).lower()
+            if "v=spf1" in txt:
+                if "-all" in txt:
                     email_section["spf"] = "strict"
-                elif "~all" in txt.lower():
+                elif "~all" in txt:
                     email_section["spf"] = "softfail"
-                elif "+all" in txt.lower():
+                elif "+all" in txt:
                     email_section["spf"] = "permissive_INSECURE"
                     risk_score += 3
                 else:
@@ -1733,13 +1728,13 @@ def _audit_one(domain: str) -> dict:
                 break
     if dmarc_records and isinstance(dmarc_records, list):
         for rec in dmarc_records:
-            txt = rec.get("data", {}).get("text", "") if isinstance(rec, dict) else str(rec)
-            if "v=dmarc1" in txt.lower():
-                if "p=reject" in txt.lower():
+            txt = record_text(rec).lower()
+            if "v=dmarc1" in txt:
+                if "p=reject" in txt:
                     email_section["dmarc"] = "reject"
-                elif "p=quarantine" in txt.lower():
+                elif "p=quarantine" in txt:
                     email_section["dmarc"] = "quarantine"
-                elif "p=none" in txt.lower():
+                elif "p=none" in txt:
                     email_section["dmarc"] = "none"
                     risk_score += 1
                 else:
@@ -1755,13 +1750,11 @@ def _audit_one(domain: str) -> dict:
     caa_section = {"has_records": bool(caa_records), "has_issuewild": False, "has_iodef": False}
     if caa_records and isinstance(caa_records, list):
         for rec in caa_records:
-            data = rec.get("data", rec) if isinstance(rec, dict) else {}
-            if isinstance(data, dict):
-                tag = data.get("tag", "")
-                if tag == "issuewild":
-                    caa_section["has_issuewild"] = True
-                elif tag == "iodef":
-                    caa_section["has_iodef"] = True
+            tag = record_field(rec, "tag")
+            if tag == "issuewild":
+                caa_section["has_issuewild"] = True
+            elif tag == "iodef":
+                caa_section["has_iodef"] = True
     if not caa_section["has_records"]:
         risk_score += 1
 
@@ -1769,11 +1762,9 @@ def _audit_one(domain: str) -> dict:
     ns_list = []
     if ns_records and isinstance(ns_records, list):
         for rec in ns_records:
-            ns = (rec.get("data", rec) if isinstance(rec, dict) else {})
-            if isinstance(ns, dict):
-                ns_list.append(ns.get("nameserver", "").rstrip("."))
-            else:
-                ns_list.append(str(ns).rstrip("."))
+            ns = record_field(rec, "nameserver").rstrip(".")
+            if ns:
+                ns_list.append(ns)
     ns_section = {"count": len(ns_list), "nameservers": ns_list[:6]}
     if len(ns_list) < 2:
         risk_score += 2
@@ -1783,16 +1774,14 @@ def _audit_one(domain: str) -> dict:
     infra_section = {"cdn_waf": [], "hosting": []}
     if cname_records and isinstance(cname_records, list):
         for rec in cname_records:
-            data = rec.get("data", rec) if isinstance(rec, dict) else {}
-            target = (data.get("target", "") if isinstance(data, dict) else str(data)).lower().rstrip(".")
+            target = record_field(rec, "target").lower().rstrip(".")
             cdn = _identify_cdn_from_cname(target)
             if cdn and cdn not in infra_section["cdn_waf"]:
                 infra_section["cdn_waf"].append(cdn)
     if a_records and isinstance(a_records, list):
         for rec in a_records:
-            data = rec.get("data", rec) if isinstance(rec, dict) else {}
-            ip = (data.get("address", "") if isinstance(data, dict) else str(data))
-            provider = _identify_hosting(str(ip))
+            ip = record_field(rec, "address")
+            provider = _identify_hosting(ip)
             if provider and provider not in infra_section["hosting"]:
                 infra_section["hosting"].append(provider)
 
