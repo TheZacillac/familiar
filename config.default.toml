@@ -28,6 +28,13 @@ export_dir = "~/.familiar/exports"
 # Seer's Rust core releases the GIL during I/O, so real parallelism is achieved.
 max_workers = 12
 
+# How much skill documentation to merge into the system prompt.
+#   "full"    — SKILL.md plus every reference/*.md (~30k tokens with the
+#               default skill set — needs a 128k+ context model).
+#   "minimal" — only top-level SKILL.md files. Required for local
+#               8k–32k context models such as the default Ollama build.
+skill_docs_level = "full"
+
 [tracing]
 # LangSmith observability (pip install -e ".[tracing]")
 enabled = true

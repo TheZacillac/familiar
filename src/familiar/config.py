@@ -28,6 +28,14 @@ DEFAULTS = {
     },
     "agent": {
         "max_workers": 12,
+        # How much skill documentation to merge into the system prompt:
+        #   "full"    — SKILL.md plus every reference/*.md (default; large
+        #               prompt, ~30k tokens against the default skill set —
+        #               only suitable for 128k+ context models).
+        #   "minimal" — only top-level SKILL.md files. Recommended for
+        #               local 8k–32k context models such as the default
+        #               Ollama nemotron build.
+        "skill_docs_level": "full",
     },
     "tracing": {
         "enabled": False,

@@ -144,8 +144,8 @@ def _load_env():
                 os.environ.setdefault(key, value)
 
 
-def _load_skill_dir(skill_dir, heading_prefix="##") -> list[str]:
-    """Load SKILL.md and reference docs from a skill directory."""
+def _load_skill_dir(skill_dir, heading_prefix="##", include_references: bool = True) -> list[str]:
+    """Load SKILL.md (and optionally reference docs) from a skill directory."""
     sections = []
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
@@ -158,34 +158,46 @@ def _load_skill_dir(skill_dir, heading_prefix="##") -> list[str]:
     if content:
         sections.append(f"{heading_prefix} {skill_dir.name.replace('-', ' ').title()} Skill Reference\n\n{content}")
 
-    # Load reference docs if available
-    ref_dir = skill_dir / "reference"
-    if ref_dir.is_dir():
-        for ref_file in sorted(ref_dir.glob("*.md")):
-            try:
-                ref_content = ref_file.read_text().strip()
-            except OSError:
-                continue
-            if ref_content:
-                sections.append(ref_content)
+    if include_references:
+        # Load reference docs if available
+        ref_dir = skill_dir / "reference"
+        if ref_dir.is_dir():
+            for ref_file in sorted(ref_dir.glob("*.md")):
+                try:
+                    ref_content = ref_file.read_text().strip()
+                except OSError:
+                    continue
+                if ref_content:
+                    sections.append(ref_content)
 
     # Recurse into sub-skills (e.g., other/email-auth/, other/typosquatting/)
     for child in sorted(skill_dir.iterdir()):
         if child.is_dir() and not child.name.startswith(("_", ".")) and child.name not in ("reference", "scripts"):
-            sections.extend(_load_skill_dir(child, heading_prefix=heading_prefix + "#"))
+            sections.extend(_load_skill_dir(
+                child,
+                heading_prefix=heading_prefix + "#",
+                include_references=include_references,
+            ))
 
     return sections
 
 
 def _load_skill_docs() -> str:
-    """Load skill documentation from scrolls to enrich the system prompt."""
+    """Load skill documentation from scrolls to enrich the system prompt.
+
+    Honors ``[agent].skill_docs_level``: ``"minimal"`` drops every
+    ``reference/*.md`` file (recommended for local 8k–32k context
+    models); the default ``"full"`` loads everything.
+    """
+    level = config.get("agent", "skill_docs_level", "full")
+    include_references = level != "minimal"
     sections = []
     for name in scrolls.list_skills():
         try:
             skill_dir = scrolls.skill_path(name)
         except FileNotFoundError:
             continue
-        sections.extend(_load_skill_dir(skill_dir))
+        sections.extend(_load_skill_dir(skill_dir, include_references=include_references))
 
     return "\n\n---\n\n".join(sections)
 

@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 import seer
 from langchain_core.tools import tool
 
+from ..findings import sort_findings
 from ..seer_shape import record_field, record_text, record_value_dict
 from ..utils import parallel_calls, safe_call
 
@@ -132,7 +133,7 @@ def domain_reputation_check(domain: str) -> str:
         "listed_count": listed_count,
         "total_checks": len(checks),
         "checks": checks,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
+        "findings": sort_findings(findings),
     }, default=str)
 
 
@@ -282,7 +283,7 @@ def zone_transfer_test(domain: str) -> str:
         "vulnerable": vulnerable,
         "nameservers_tested": test_ns,
         "results": results,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
+        "findings": sort_findings(findings),
     }, default=str)
 
 
@@ -439,7 +440,7 @@ def mta_sts_check(domain: str) -> str:
             "policy": sts_policy_info,
         },
         "tls_rpt": tlsrpt_info,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
+        "findings": sort_findings(findings),
     }, default=str)
 
 
@@ -587,7 +588,7 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
         "dnssec_validated": dnssec_ok,
         "tlsa_records": parsed_tlsa,
         "certificate": cert_info,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
+        "findings": sort_findings(findings),
     }, default=str)
 
 
