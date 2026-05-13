@@ -1,8 +1,11 @@
 """Test 11: Tool inventory completeness and integrity.
 
 Verifies that ALL_TOOLS exports the expected number of tools, has no
-duplicates, and every entry is a callable LangChain tool with a name.
+duplicates, every entry is a callable LangChain tool with a name, and
+that CLAUDE.md stays in sync with the actual tool surface.
 """
+
+from pathlib import Path
 
 import pytest
 
@@ -117,3 +120,30 @@ class TestExpectedToolNames:
     def test_tool_present(self, expected_name):
         names = {t.name for t in ALL_TOOLS}
         assert expected_name in names
+
+
+class TestClaudeMdSync:
+    """CLAUDE.md must stay aligned with the actual tool surface.
+
+    Drift between docs and code silently misleads future maintainers
+    (and the LLM). These tests fail loudly so adding/removing a tool
+    forces a CLAUDE.md update in the same commit.
+    """
+
+    @pytest.fixture
+    def claude_md(self) -> str:
+        path = Path(__file__).resolve().parent.parent / "CLAUDE.md"
+        return path.read_text()
+
+    def test_total_count_line_matches(self, claude_md):
+        expected = f"## Tools ({len(ALL_TOOLS)} total)"
+        assert expected in claude_md, (
+            f"CLAUDE.md tool count is out of date — expected line {expected!r} "
+            f"(ALL_TOOLS now has {len(ALL_TOOLS)} entries)."
+        )
+
+    def test_every_tool_name_appears_in_claude_md(self, claude_md):
+        missing = [t.name for t in ALL_TOOLS if f"`{t.name}`" not in claude_md]
+        assert not missing, (
+            f"{len(missing)} tool(s) missing from CLAUDE.md tool listing: {missing}"
+        )
