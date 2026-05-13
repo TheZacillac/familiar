@@ -56,3 +56,7 @@ known-first-party = ["familiar"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: tests that hit real network — opt in with -m slow",
+]
+addopts = "-m 'not slow'"

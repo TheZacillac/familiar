@@ -11,43 +11,32 @@ from unittest.mock import patch
 import pytest
 
 from familiar.tools.pentest_tools import dns_zone_security
+from tests.fixtures import seer_records as sr
 
 
 # ---------------------------------------------------------------------------
-# Helpers: reusable mock data builders
+# Helpers: thin wrappers over the central seer_records builders so tests
+# read fluently while the record shape lives in one file.
 # ---------------------------------------------------------------------------
 
 def _ns_records(*names):
-    """Build NS record list."""
-    return [{"data": {"nameserver": ns}} for ns in names]
+    return [sr.ns_record(ns) for ns in names]
 
 
 def _soa_record(refresh=3600, retry=900, expire=1209600, minimum=3600):
-    """Build a single-element SOA record list."""
-    return [{"data": {
-        "mname": "ns1.example.com",
-        "rname": "admin.example.com",
-        "serial": 2024010101,
-        "refresh": refresh,
-        "retry": retry,
-        "expire": expire,
-        "minimum": minimum,
-    }}]
+    return [sr.soa_record(refresh=refresh, retry=retry, expire=expire, minimum=minimum)]
 
 
 def _caa_records(tags):
-    """Build CAA record list from tag tuples: [(tag, value), ...]."""
-    return [{"data": {"tag": t, "value": v, "flags": 0}} for t, v in tags]
+    return [sr.caa_record(t, v) for t, v in tags]
 
 
 def _a_records(*ips):
-    """Build A record list."""
-    return [{"data": {"address": ip}} for ip in ips]
+    return [sr.a_record(ip) for ip in ips]
 
 
 def _cname_records(*targets):
-    """Build CNAME record list."""
-    return [{"data": {"target": t}} for t in targets]
+    return [sr.cname_record(t) for t in targets]
 
 
 def _dnssec_data(enabled=True, status="healthy", has_ds=True, has_dnskey=True, issues=None):
@@ -462,7 +451,7 @@ class TestZoneTransfer:
     @patch("familiar.tools.pentest_tools.seer")
     def test_any_large_response(self, mock_seer):
         """18. ANY query returns >15 records => LOW finding (RFC 8482 non-compliant)."""
-        big_any = [{"data": {"address": f"1.2.3.{i}"}} for i in range(20)]
+        big_any = [sr.a_record(f"1.2.3.{i}") for i in range(20)]
         mock_seer.dig.side_effect = _make_dig_side_effect(
             ns=_ns_records("ns1.example.com"),
             soa=_HEALTHY_SOA, caa=_HEALTHY_CAA, a=_HEALTHY_A,
@@ -484,7 +473,7 @@ class TestZoneTransfer:
     @patch("familiar.tools.pentest_tools.seer")
     def test_any_small_response(self, mock_seer):
         """19. ANY query returns <=15 records => no finding."""
-        small_any = [{"data": {"address": f"1.2.3.{i}"}} for i in range(5)]
+        small_any = [sr.a_record(f"1.2.3.{i}") for i in range(5)]
         mock_seer.dig.side_effect = _make_dig_side_effect(
             ns=_ns_records("ns1.example.com"),
             soa=_HEALTHY_SOA, caa=_HEALTHY_CAA, a=_HEALTHY_A,
