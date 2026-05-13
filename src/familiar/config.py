@@ -36,6 +36,13 @@ DEFAULTS = {
         #               local 8k–32k context models such as the default
         #               Ollama nemotron build.
         "skill_docs_level": "full",
+        # When the local hosting-prefix table (pentest_tools._HOSTING_PREFIXES)
+        # doesn't match an IP, fall back to a seer.rdap_ip lookup for
+        # authoritative attribution. Results are cached per-process. Adds
+        # ~100ms per uncached unknown IP. Default off because the prefix
+        # table covers the common cases (AWS/GCP/Azure/Cloudflare/etc.)
+        # and most users won't want the network round-trip.
+        "rdap_hosting_lookup": False,
     },
     "tracing": {
         "enabled": False,

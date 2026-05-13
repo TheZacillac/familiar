@@ -35,6 +35,11 @@ max_workers = 12
 #               8k–32k context models such as the default Ollama build.
 skill_docs_level = "full"
 
+# Fall back to a seer.rdap_ip lookup for IPs the local hosting-prefix
+# table doesn't recognise. Authoritative but adds a network round-trip
+# (~100ms) per uncached unknown IP. Results are cached per process.
+rdap_hosting_lookup = false
+
 [tracing]
 # LangSmith observability (pip install -e ".[tracing]")
 enabled = true
