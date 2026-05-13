@@ -46,8 +46,7 @@ def _extract_address(record) -> str:
     return record_field(record, "address")
 
 
-@tool
-def domain_reputation_check(domain: str) -> str:
+def _domain_reputation_check_impl(domain: str) -> dict:
     """Check a domain's reputation across DNS-based blocklists (DNSBL). Queries
     Spamhaus (ZEN+DBL), SURBL, URIBL, Barracuda, SpamCop, and others. Checks both
     the domain directly and its resolved IP addresses against IP-based blocklists."""
@@ -125,7 +124,7 @@ def domain_reputation_check(domain: str) -> str:
                 "recommendation": f"Investigate listing at {check['blocklist']} and request delisting if legitimate",
             })
 
-    return json.dumps({
+    return {
         "domain": domain,
         "resolved_ips": ips,
         "overall_status": overall_status,
@@ -134,7 +133,15 @@ def domain_reputation_check(domain: str) -> str:
         "total_checks": len(checks),
         "checks": checks,
         "findings": sort_findings(findings),
-    }, default=str)
+    }
+
+
+@tool
+def domain_reputation_check(domain: str) -> str:
+    """Check a domain's reputation across DNS-based blocklists (DNSBL). Queries
+    Spamhaus (ZEN+DBL), SURBL, URIBL, Barracuda, SpamCop, and others. Checks both
+    the domain directly and its resolved IP addresses against IP-based blocklists."""
+    return json.dumps(_domain_reputation_check_impl(domain), default=str)
 
 
 def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
@@ -224,8 +231,7 @@ def _extract_nameserver(record) -> str:
     return record_field(record, "nameserver").rstrip(".")
 
 
-@tool
-def zone_transfer_test(domain: str) -> str:
+def _zone_transfer_test_impl(domain: str) -> dict:
     """Test whether a domain's nameservers allow unauthorized DNS zone transfers
     (AXFR). Zone transfers that succeed from arbitrary sources expose the entire
     DNS zone contents — a critical security finding in any pentest."""
@@ -240,14 +246,14 @@ def zone_transfer_test(domain: str) -> str:
             nameservers.append(ns)
 
     if not nameservers:
-        return json.dumps({
+        return {
             "domain": domain,
             "vulnerable": False,
             "nameservers_tested": [],
             "results": [],
             "findings": [],
             "note": "No nameservers found for this domain",
-        }, default=str)
+        }
 
     # Test each nameserver (max 4)
     test_ns = nameservers[:4]
@@ -278,13 +284,21 @@ def zone_transfer_test(domain: str) -> str:
 
         results.append(result_entry)
 
-    return json.dumps({
+    return {
         "domain": domain,
         "vulnerable": vulnerable,
         "nameservers_tested": test_ns,
         "results": results,
         "findings": sort_findings(findings),
-    }, default=str)
+    }
+
+
+@tool
+def zone_transfer_test(domain: str) -> str:
+    """Test whether a domain's nameservers allow unauthorized DNS zone transfers
+    (AXFR). Zone transfers that succeed from arbitrary sources expose the entire
+    DNS zone contents — a critical security finding in any pentest."""
+    return json.dumps(_zone_transfer_test_impl(domain), default=str)
 
 
 def _extract_txt_value(record) -> str:
@@ -308,8 +322,7 @@ def _fetch_mta_sts_policy(domain: str, timeout: float = 5.0) -> dict:
         return {"success": False, "error": str(e)}
 
 
-@tool
-def mta_sts_check(domain: str) -> str:
+def _mta_sts_check_impl(domain: str) -> dict:
     """Check MTA-STS (RFC 8461) and TLS-RPT (RFC 8460) configuration. MTA-STS
     enforces TLS for inbound email, preventing downgrade attacks. TLS-RPT enables
     reporting of TLS negotiation failures. Checks the _mta-sts TXT record, the
@@ -432,7 +445,7 @@ def mta_sts_check(domain: str) -> str:
             "recommendation": f"Add a TXT record at _smtp._tls.{domain} with v=TLSRPTv1; rua=mailto:tls-reports@{domain}",
         })
 
-    return json.dumps({
+    return {
         "domain": domain,
         "has_mx": has_mx,
         "mta_sts": {
@@ -441,7 +454,16 @@ def mta_sts_check(domain: str) -> str:
         },
         "tls_rpt": tlsrpt_info,
         "findings": sort_findings(findings),
-    }, default=str)
+    }
+
+
+@tool
+def mta_sts_check(domain: str) -> str:
+    """Check MTA-STS (RFC 8461) and TLS-RPT (RFC 8460) configuration. MTA-STS
+    enforces TLS for inbound email, preventing downgrade attacks. TLS-RPT enables
+    reporting of TLS negotiation failures. Checks the _mta-sts TXT record, the
+    .well-known/mta-sts.txt policy file, and the _smtp._tls TXT record."""
+    return json.dumps(_mta_sts_check_impl(domain), default=str)
 
 
 # DANE TLSA usage field descriptions
@@ -464,8 +486,7 @@ _TLSA_MATCHING = {
 }
 
 
-@tool
-def dane_tlsa_check(domain: str, port: int = 443) -> str:
+def _dane_tlsa_check_impl(domain: str, port: int = 443) -> dict:
     """Check DANE TLSA records (RFC 6698/7671) for a domain and port. DANE binds
     TLS certificates to DNS via DNSSEC, preventing CA compromise attacks. Checks
     _<port>._tcp.<domain> for TLSA records and validates against the actual
@@ -580,7 +601,7 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
                               "pinning independent of the CA system",
         })
 
-    return json.dumps({
+    return {
         "domain": domain,
         "port": port,
         "tlsa_name": tlsa_name,
@@ -589,7 +610,16 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
         "tlsa_records": parsed_tlsa,
         "certificate": cert_info,
         "findings": sort_findings(findings),
-    }, default=str)
+    }
+
+
+@tool
+def dane_tlsa_check(domain: str, port: int = 443) -> str:
+    """Check DANE TLSA records (RFC 6698/7671) for a domain and port. DANE binds
+    TLS certificates to DNS via DNSSEC, preventing CA compromise attacks. Checks
+    _<port>._tcp.<domain> for TLSA records and validates against the actual
+    certificate. Common ports: 443 (HTTPS), 25 (SMTP), 587 (submission)."""
+    return json.dumps(_dane_tlsa_check_impl(domain, port), default=str)
 
 
 # Technology fingerprint patterns: (header_field, pattern, tech_name, category)
