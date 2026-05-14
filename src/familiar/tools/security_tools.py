@@ -17,7 +17,21 @@ from langchain_core.tools import tool
 
 from ..findings import sort_findings
 from ..seer_shape import record_field, record_text, record_value_dict
-from ..utils import parallel_calls, safe_call
+from ..utils import parallel_calls, safe_call, ssl_probe_error
+
+
+def _try_ssl(domain: str):
+    """Call ``seer.ssl(domain)`` and preserve the error string on failure.
+
+    Local to this module so ``@patch("familiar.tools.security_tools.seer")``
+    in tests still intercepts the SSL call. Returns a normal ``seer.ssl``
+    result dict on success or a sentinel ``{"_ssl_error": "..."}`` dict
+    on failure.
+    """
+    try:
+        return seer.ssl(domain)
+    except Exception as e:
+        return {"_ssl_error": str(e)}
 
 # --- DNS-based blocklist providers ---
 # Each entry: (name, zone_suffix, query_type, description)
@@ -500,8 +514,14 @@ def _dane_tlsa_check_impl(domain: str, port: int = 443) -> dict:
     tlsa_records, dnssec_data, ssl_data = parallel_calls(
         (seer.dig, tlsa_name, "TLSA"),
         (seer.dnssec, domain),
-        (seer.ssl, domain),
+        (_try_ssl, domain),
     )
+
+    # Drop the _try_ssl sentinel so it never walks into the isinstance(dict)
+    # branch below; capture the reason for the certificate_info section.
+    ssl_error = ssl_probe_error(ssl_data)
+    if ssl_error:
+        ssl_data = None
 
     findings = []
 
@@ -591,6 +611,10 @@ def _dane_tlsa_check_impl(domain: str, port: int = 443) -> dict:
                 "valid_until": leaf.get("valid_until"),
                 "is_valid": ssl_data.get("is_valid", False),
             }
+    elif ssl_error:
+        # Probe couldn't reach the cert — say so honestly rather than emitting
+        # an empty cert_info dict that downstream consumers might misread.
+        cert_info = {"probe_error": ssl_error, "probe_inconclusive": True}
 
     if not dane_configured:
         findings.append({

@@ -68,15 +68,15 @@ Catppuccin Mocha palette with Rich library:
 
 ---
 
-## Tools (75 total)
+## Tools (76 total)
 
-All wrapped with `@langchain_core.tools.tool`, return JSON strings. Seer surface tracks `seer>=0.24.0`. Record-shape access goes through `src/familiar/seer_shape.py` — never reach into seer record dicts directly.
+All wrapped with `@langchain_core.tools.tool`, return JSON strings. Seer surface tracks `seer>=0.25.0`. Record-shape access goes through `src/familiar/seer_shape.py` — never reach into seer record dicts directly.
 
-### Seer Tools (24) — `seer_tools.py`
+### Seer Tools (25) — `seer_tools.py`
 
 **Single (17):** `seer_lookup`, `seer_info`, `seer_whois`, `seer_rdap`, `seer_rdap_domain`, `seer_rdap_ip`, `seer_rdap_asn`, `seer_dig`, `seer_propagation`, `seer_status`, `seer_availability`, `seer_subdomains`, `seer_ssl`, `seer_dnssec`, `seer_dns_compare`, `seer_dns_follow`, `seer_diff`
 
-**Bulk (7, max 100 domains):** `seer_bulk_lookup`, `seer_bulk_info`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`, `seer_bulk_availability`
+**Bulk (8, max 100 domains):** `seer_bulk_lookup`, `seer_bulk_info`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`, `seer_bulk_ssl`, `seer_bulk_availability`
 
 ### Tome Tools (10) — `tome_tools.py`
 

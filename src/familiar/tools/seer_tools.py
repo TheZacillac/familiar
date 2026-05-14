@@ -329,6 +329,23 @@ def seer_bulk_availability(domains: list[str] | str, concurrency: int = 10) -> s
 
 
 @tool
+def seer_bulk_ssl(domains: list[str], concurrency: int = 10) -> str:
+    """Deep SSL/TLS chain inspection for multiple domains at once. Returns full certificate chain, validity, expiry, SANs, and protocol details per domain — same payload as seer_ssl. Recommended max 100 domains for performance."""
+    concurrency = max(1, min(concurrency, 50))
+    start = time.monotonic()
+    logger.debug("seer_bulk_ssl called: count=%d concurrency=%d", len(domains), concurrency)
+    try:
+        result = seer.bulk_ssl(domains, concurrency)
+        elapsed = (time.monotonic() - start) * 1000
+        logger.info("seer_bulk_ssl completed: count=%d elapsed_ms=%.1f", len(domains), elapsed)
+        return json.dumps(result, default=str)
+    except Exception as e:
+        elapsed = (time.monotonic() - start) * 1000
+        logger.warning("seer_bulk_ssl failed: count=%d elapsed_ms=%.1f error=%s", len(domains), elapsed, e)
+        return json.dumps({"error": str(e)})
+
+
+@tool
 def seer_bulk_info(domains: list[str], concurrency: int = 10) -> str:
     """Lightweight bulk metadata lookup for multiple domains. Returns a flat domain-info summary (registrar, dates, nameservers, status) per domain. Cheaper than seer_bulk_lookup when only a summary is needed. Recommended max 100 domains for performance."""
     concurrency = max(1, min(concurrency, 50))
@@ -369,5 +386,6 @@ SEER_TOOLS = [
     seer_bulk_dig,
     seer_bulk_status,
     seer_bulk_propagation,
+    seer_bulk_ssl,
     seer_bulk_availability,
 ]

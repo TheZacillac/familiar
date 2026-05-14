@@ -100,6 +100,26 @@ def parallel_calls(*call_specs, errors: list | None = None):
     return results
 
 
+def ssl_probe_error(ssl_data) -> str | None:
+    """Return the probe-failure message when *ssl_data* is a ``_try_ssl``
+    sentinel, else ``None``.
+
+    Companion to each consumer module's local ``_try_ssl`` wrapper.
+    Composite tools call this to branch between "the probe failed (so we
+    cannot make any claim about the cert)" and "the probe succeeded (so
+    ``is_valid`` etc. are authoritative)". A failed probe is NOT
+    equivalent to a missing certificate — many of the failure modes are
+    DNS, transport, or local-resolver issues that say nothing about the
+    real certificate.
+
+    The per-module ``_try_ssl`` lives next to each tool's ``seer`` import
+    so ``@patch("module.seer")`` keeps working in tests.
+    """
+    if isinstance(ssl_data, dict) and "_ssl_error" in ssl_data:
+        return ssl_data["_ssl_error"]
+    return None
+
+
 def days_until(raw) -> int | None:
     """Return days from now until a WHOIS/RDAP date, or None if unparseable.
 
