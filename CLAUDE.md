@@ -20,7 +20,7 @@ familiar/
     ├── memory.py                 # SQLite persistence (domain notebook, watchlist, prefs)
     ├── utils.py                  # Shared utilities (safe_call, days_until)
     └── tools/
-        ├── __init__.py           # Exports ALL_TOOLS (64 total)
+        ├── __init__.py           # Exports ALL_TOOLS (76 total)
         ├── seer_tools.py         # 24 Seer tools (LangChain @tool wrappers)
         ├── tome_tools.py         # 9 Tome tools (LangChain @tool wrappers)
         ├── advisor_tools.py      # 11 Advisory tools (6 strategic + 5 composite)

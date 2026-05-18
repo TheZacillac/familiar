@@ -8,6 +8,7 @@ agent stack).
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -16,6 +17,8 @@ from rich.table import Table
 
 from . import config
 from .tools.memory_tools import get_memory
+
+logger = logging.getLogger("familiar")
 
 # Slash commands that get expanded into agent prompts ({args} is replaced).
 SLASH_COMMANDS = {
@@ -249,8 +252,12 @@ def startup_check(console: Console) -> None:
             )
         parts.append("[/info]")
         console.print("".join(parts))
-    except Exception:
-        return
+    except Exception as e:
+        # Don't break REPL startup, but make the failure visible.
+        logger.warning("startup_check failed: %s", e)
+        console.print(
+            f"[warning]Watchlist startup check failed: {e}[/warning]"
+        )
 
 
 def export_last_response(

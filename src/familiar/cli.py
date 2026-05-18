@@ -1,11 +1,14 @@
 """CLI entry point for the Familiar agent (LangChain Deep Agents engine)."""
 
+import logging
 import sys
 import uuid
 import warnings
 from datetime import datetime, timezone
 
 warnings.filterwarnings("ignore", message="Core Pydantic V1")
+
+logger = logging.getLogger("familiar")
 
 # Configure logging before any other imports that might emit logs.
 try:
@@ -79,8 +82,14 @@ def _stream_invoke(agent, content: str, config: dict) -> str | None:
                 msg_id = getattr(msg, "id", None)
                 if msg_id:
                     seen_ids.add(msg_id)
-    except Exception:
-        pass  # No checkpoint yet (first invocation) — seen_ids stays empty
+    except (KeyError, AttributeError, ValueError):
+        # No checkpoint yet (first invocation) — seen_ids stays empty.
+        pass
+    except Exception as e:
+        # Something genuinely broke (corrupt checkpoint, version mismatch).
+        # An empty seen_ids set causes prior-turn messages to be re-emitted
+        # as duplicates, so make the failure visible.
+        logger.warning("agent.get_state failed: %s", e)
 
     with console.status("[spinner]Thinking...[/spinner]", spinner="dots") as status:
         for chunk in agent.stream(

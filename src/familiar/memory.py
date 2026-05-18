@@ -65,18 +65,18 @@ class Memory:
 
     def remember_domain(self, domain: str, notes: str = "", tags: str = "") -> dict:
         """Save or update a domain in the notebook. Appends notes, merges tags."""
-        self._check_open()
         now = datetime.now(timezone.utc).isoformat()
         domain = domain.lower().strip()
         with self._lock:
+            self._check_open_locked()
             existing = self._conn.execute(
                 "SELECT * FROM domain_notes WHERE domain = ?", (domain,)
             ).fetchone()
             if existing:
                 current_notes = existing["notes"]
                 merged_notes = f"{current_notes}\n{notes}".strip() if notes else current_notes
-                current_tags = set(filter(None, existing["tags"].split(",")))
-                new_tags = set(filter(None, tags.split(",")))
+                current_tags = set(filter(None, (t.strip() for t in existing["tags"].split(","))))
+                new_tags = set(filter(None, (t.strip() for t in tags.split(","))))
                 merged_tags = ",".join(sorted(current_tags | new_tags))
                 self._conn.execute(
                     "UPDATE domain_notes SET notes = ?, tags = ?, last_seen = ? WHERE domain = ?",
@@ -94,8 +94,8 @@ class Memory:
 
     def recall_domain(self, domain: str) -> dict | None:
         """Retrieve notes for a specific domain."""
-        self._check_open()
         with self._lock:
+            self._check_open_locked()
             return self._get_domain_note_unlocked(domain.lower().strip())
 
     def recall_all_domains(self) -> list[dict]:
@@ -209,11 +209,11 @@ class Memory:
 
     def save_snapshot(self, domain: str, data: dict) -> dict:
         """Save a structured snapshot of a domain's current state."""
-        self._check_open()
         now = datetime.now(timezone.utc).isoformat()
         domain = domain.lower().strip()
         data_json = json.dumps(data, default=str)
         with self._lock:
+            self._check_open_locked()
             cursor = self._conn.execute(
                 "INSERT INTO domain_snapshots (domain, data, captured_at) VALUES (?, ?, ?)",
                 (domain, data_json, now),
@@ -284,8 +284,13 @@ class Memory:
             "total_changes": len(changes),
         }
 
-    def _check_open(self):
-        """Raise RuntimeError if the database connection has been closed."""
+    def _check_open_locked(self):
+        """Raise RuntimeError if the connection has been closed.
+
+        Must be called with ``self._lock`` held — otherwise a concurrent
+        ``close()`` could slip a None into ``self._conn`` between the check
+        and the caller's subsequent ``self._conn.execute(...)``.
+        """
         if self._conn is None:
             raise RuntimeError("Memory database is closed")
 

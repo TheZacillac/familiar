@@ -133,6 +133,12 @@ def watchlist_check() -> str:
                             "severity": "critical",
                             "message": f"Expired {abs(days_left)} days ago ({expiry})",
                         })
+                    elif days_left == 0:
+                        domain_alerts.append({
+                            "type": "expiration",
+                            "severity": "critical",
+                            "message": f"Expires today ({expiry})",
+                        })
                     elif days_left < 30:
                         domain_alerts.append({
                             "type": "expiration",
@@ -173,6 +179,12 @@ def watchlist_check() -> str:
                             "type": "ssl_expiry",
                             "severity": "critical",
                             "message": f"SSL certificate expired {abs(ssl_days)} days ago",
+                        })
+                    elif ssl_days == 0:
+                        domain_alerts.append({
+                            "type": "ssl_expiry",
+                            "severity": "critical",
+                            "message": "SSL certificate expires today",
                         })
                     elif ssl_days is not None and ssl_days < 14:
                         domain_alerts.append({

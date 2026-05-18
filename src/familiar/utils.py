@@ -39,13 +39,17 @@ def safe_call(fn, *args, _errors: list | None = None, _op: str | None = None, **
         return fn(*args, **kwargs)
     except Exception as e:
         op_name = _op or getattr(fn, "__name__", repr(fn))
-        logger.debug("Call to %s failed: %s", op_name, e)
         if _errors is not None:
+            # Caller is collecting errors and will surface them — debug is fine.
+            logger.debug("Call to %s failed: %s", op_name, e)
             _errors.append({
                 "op": op_name,
                 "error": str(e),
                 "type": type(e).__name__,
             })
+        else:
+            # No collector — failure would otherwise vanish silently.
+            logger.warning("Call to %s failed (no error collector): %s", op_name, e)
         return None
 
 

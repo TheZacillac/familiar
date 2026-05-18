@@ -144,7 +144,13 @@ learned so far from any tool calls, and what the power model should focus on
 
 
 def _load_env():
-    """Load .env file if present, without requiring python-dotenv."""
+    """Load .env file if present, without requiring python-dotenv.
+
+    Supports ``KEY=value``, ``KEY="value"``, ``KEY='value'``, and the
+    ``export KEY=value`` form. For unquoted values, an inline ``#``
+    comment is only stripped when preceded by whitespace, so passwords
+    or tokens containing ``#`` survive unchanged.
+    """
     env_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, ".env")
     env_path = os.path.normpath(env_path)
     if not os.path.isfile(env_path):
@@ -154,15 +160,24 @@ def _load_env():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
             key, _, value = line.partition("=")
             key, value = key.strip(), value.strip()
             # Strip surrounding quotes (common .env convention)
             if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                 value = value[1:-1]
             else:
-                # Strip inline comments (only for unquoted values)
-                if "#" in value:
-                    value = value.split("#", 1)[0].rstrip()
+                # Strip inline comments only when '#' is preceded by whitespace,
+                # so e.g. PASSWORD=abc#123 is preserved verbatim.
+                hash_idx = value.find(" #")
+                tab_idx = value.find("\t#")
+                if hash_idx == -1:
+                    hash_idx = tab_idx
+                elif tab_idx != -1:
+                    hash_idx = min(hash_idx, tab_idx)
+                if hash_idx >= 0:
+                    value = value[:hash_idx].rstrip()
             if key:
                 os.environ.setdefault(key, value)
 

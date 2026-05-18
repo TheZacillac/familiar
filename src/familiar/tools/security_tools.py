@@ -711,23 +711,38 @@ _COOKIE_FINGERPRINTS = [
 
 
 def _fetch_http_headers(domain: str, timeout: float = 8.0) -> dict:
-    """Fetch HTTP response headers from a domain via HEAD request."""
-    url = f"https://{domain}/"
+    """Fetch HTTP response headers from a domain via HEAD request.
+
+    Tries HTTPS first, falls back to HTTP. On full failure, returns both
+    error strings so callers (and the LLM) can distinguish a cert/hostname
+    issue from a transport-layer one.
+    """
+    https_url = f"https://{domain}/"
     try:
-        req = Request(url, method="HEAD", headers={"User-Agent": "familiar/0.1"})
+        req = Request(https_url, method="HEAD", headers={"User-Agent": "familiar/0.1"})
         with urlopen(req, timeout=timeout) as resp:
             headers = {k.lower(): v for k, v in resp.headers.items()}
-            return {"success": True, "status_code": resp.status, "headers": headers}
-    except Exception:
-        # Retry with HTTP if HTTPS fails
+            return {"success": True, "scheme": "https", "status_code": resp.status, "headers": headers}
+    except Exception as https_exc:
         try:
-            url = f"http://{domain}/"
-            req = Request(url, method="HEAD", headers={"User-Agent": "familiar/0.1"})
+            http_url = f"http://{domain}/"
+            req = Request(http_url, method="HEAD", headers={"User-Agent": "familiar/0.1"})
             with urlopen(req, timeout=timeout) as resp:
                 headers = {k.lower(): v for k, v in resp.headers.items()}
-                return {"success": True, "status_code": resp.status, "headers": headers}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+                return {
+                    "success": True,
+                    "scheme": "http",
+                    "status_code": resp.status,
+                    "headers": headers,
+                    "https_error": str(https_exc),
+                }
+        except Exception as http_exc:
+            return {
+                "success": False,
+                "https_error": str(https_exc),
+                "http_error": str(http_exc),
+                "error": str(https_exc),  # back-compat for old callers
+            }
 
 
 @tool

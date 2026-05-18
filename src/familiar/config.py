@@ -4,9 +4,12 @@ Loads settings from ``~/.familiar/config.toml`` with sensible defaults.
 Environment variables override config file values for backward compatibility.
 """
 
+import logging
 import os
 import tomllib
 from pathlib import Path
+
+logger = logging.getLogger("familiar")
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -112,7 +115,12 @@ def _apply_env_overrides(cfg: dict) -> dict:
     if val := os.environ.get("FAMILIAR_EXPORT_DIR"):
         cfg.setdefault("storage", {})["export_dir"] = val
     if val := os.environ.get("FAMILIAR_MAX_WORKERS"):
-        cfg.setdefault("agent", {})["max_workers"] = int(val)
+        try:
+            cfg.setdefault("agent", {})["max_workers"] = int(val)
+        except ValueError:
+            logger.warning(
+                "FAMILIAR_MAX_WORKERS=%r is not an integer; using default", val
+            )
     if val := os.environ.get("FAMILIAR_MODEL_FAST"):
         cfg.setdefault("model", {})["fast"] = val
     if val := os.environ.get("FAMILIAR_MODEL_POWER"):

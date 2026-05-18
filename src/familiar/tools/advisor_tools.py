@@ -127,8 +127,13 @@ def _classify_epp_statuses(raw_statuses: list) -> dict:
 
 
 def _split_domain(domain: str) -> tuple[str, str]:
-    """Split a domain into (SLD, effective TLD), handling multi-level TLDs."""
-    for suffix in _MULTI_LEVEL_TLDS:
+    """Split a domain into (SLD, effective TLD), handling multi-level TLDs.
+
+    Iterates suffixes longest-first so that adding a new multi-level entry
+    that is a superset of an existing one stays deterministic (e.g. for
+    a hypothetical ``ac.gov.uk`` vs ``gov.uk``, the longer wins).
+    """
+    for suffix in sorted(_MULTI_LEVEL_TLDS, key=len, reverse=True):
         if domain.endswith(f".{suffix}"):
             return domain[: -(len(suffix) + 1)], suffix
     parts = domain.rsplit(".", 1)
