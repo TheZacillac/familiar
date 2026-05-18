@@ -65,3 +65,39 @@ class TestExceptionContainment:
 
     def test_attribute_error_returns_none(self):
         assert safe_call(lambda: None.nonexistent) is None
+
+
+class TestErrorCollection:
+    """safe_call optionally records failures into a caller-supplied list."""
+
+    def test_success_does_not_append(self):
+        errors: list = []
+        safe_call(str.upper, "hello", _errors=errors)
+        assert errors == []
+
+    def test_failure_appends_record(self):
+        def blow_up():
+            raise RuntimeError("kaboom")
+        errors: list = []
+        result = safe_call(blow_up, _errors=errors)
+        assert result is None
+        assert len(errors) == 1
+        entry = errors[0]
+        assert entry["op"] == "blow_up"
+        assert entry["error"] == "kaboom"
+        assert entry["type"] == "RuntimeError"
+
+    def test_custom_op_label(self):
+        def blow_up():
+            raise ValueError("nope")
+        errors: list = []
+        safe_call(blow_up, _errors=errors, _op="seer.dig(example.com, A)")
+        assert errors[0]["op"] == "seer.dig(example.com, A)"
+
+    def test_errors_kwarg_not_forwarded_to_fn(self):
+        captured = {}
+        def echo_kwargs(**kw):
+            captured.update(kw)
+            return "ok"
+        safe_call(echo_kwargs, _errors=[], _op="custom", x=1)
+        assert captured == {"x": 1}, "Internal _errors/_op leaked into fn kwargs"

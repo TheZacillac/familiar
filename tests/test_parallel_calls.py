@@ -112,3 +112,39 @@ class TestArgumentPassing:
             (str.lower, "WORLD"),
         )
         assert results == ["HELLO", "world"]
+
+
+class TestErrorCollection:
+    """parallel_calls forwards a shared errors list to each child safe_call."""
+
+    def test_success_run_leaves_errors_empty(self):
+        errors: list = []
+        parallel_calls(
+            (str.upper, "a"),
+            (str.lower, "B"),
+            errors=errors,
+        )
+        assert errors == []
+
+    def test_failing_call_recorded_with_op_label(self):
+        def boom(x):
+            raise ValueError(f"bad: {x}")
+        errors: list = []
+        results = parallel_calls(
+            (str.upper, "a"),
+            (boom, "thing"),
+            errors=errors,
+        )
+        assert results == ["A", None]
+        assert len(errors) == 1
+        assert errors[0]["op"] == "boom(thing)"
+        assert errors[0]["error"] == "bad: thing"
+        assert errors[0]["type"] == "ValueError"
+
+    def test_single_call_fast_path_also_records(self):
+        def boom():
+            raise RuntimeError("single")
+        errors: list = []
+        parallel_calls((boom,), errors=errors)
+        assert len(errors) == 1
+        assert errors[0]["op"] == "boom"

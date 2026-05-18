@@ -20,8 +20,8 @@ familiar/
     ├── memory.py                 # SQLite persistence (domain notebook, watchlist, prefs)
     ├── utils.py                  # Shared utilities (safe_call, days_until)
     └── tools/
-        ├── __init__.py           # Exports ALL_TOOLS (60 total)
-        ├── seer_tools.py         # 20 Seer tools (LangChain @tool wrappers)
+        ├── __init__.py           # Exports ALL_TOOLS (64 total)
+        ├── seer_tools.py         # 24 Seer tools (LangChain @tool wrappers)
         ├── tome_tools.py         # 9 Tome tools (LangChain @tool wrappers)
         ├── advisor_tools.py      # 11 Advisory tools (6 strategic + 5 composite)
         ├── pentest_tools.py      # 7 Pentest tools (security scanning composites)
@@ -68,19 +68,19 @@ Catppuccin Mocha palette with Rich library:
 
 ---
 
-## Tools (61 total)
+## Tools (76 total)
 
-All wrapped with `@langchain_core.tools.tool`, return JSON strings.
+All wrapped with `@langchain_core.tools.tool`, return JSON strings. Seer surface tracks `seer>=0.25.0`. Record-shape access goes through `src/familiar/seer_shape.py` — never reach into seer record dicts directly.
 
-### Seer Tools (20) — `seer_tools.py`
+### Seer Tools (25) — `seer_tools.py`
 
-**Single:** `seer_lookup`, `seer_whois`, `seer_rdap_domain`, `seer_rdap_ip`, `seer_rdap_asn`, `seer_dig`, `seer_propagation`, `seer_status`, `seer_availability`, `seer_subdomains`, `seer_ssl`, `seer_dnssec`, `seer_dns_compare`, `seer_dns_follow`, `seer_diff`
+**Single (17):** `seer_lookup`, `seer_info`, `seer_whois`, `seer_rdap`, `seer_rdap_domain`, `seer_rdap_ip`, `seer_rdap_asn`, `seer_dig`, `seer_propagation`, `seer_status`, `seer_availability`, `seer_subdomains`, `seer_ssl`, `seer_dnssec`, `seer_dns_compare`, `seer_dns_follow`, `seer_diff`
 
-**Bulk (max 100 domains):** `seer_bulk_lookup`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`
+**Bulk (8, max 100 domains):** `seer_bulk_lookup`, `seer_bulk_info`, `seer_bulk_whois`, `seer_bulk_dig`, `seer_bulk_status`, `seer_bulk_propagation`, `seer_bulk_ssl`, `seer_bulk_availability`
 
-### Tome Tools (9) — `tome_tools.py`
+### Tome Tools (10) — `tome_tools.py`
 
-`tome_tld_lookup`, `tome_tld_search`, `tome_tld_overview`, `tome_tld_list_by_type`, `tome_tld_count`, `tome_record_lookup`, `tome_record_search`, `tome_glossary_lookup`, `tome_glossary_search`
+`tome_tld_lookup`, `tome_tld_search`, `tome_tld_overview`, `tome_tld_list_by_type`, `tome_tld_count`, `tome_record_lookup`, `tome_record_search`, `tome_record_by_status`, `tome_glossary_lookup`, `tome_glossary_search`
 
 ### Strategic Advisor Tools (6) — `advisor_tools.py`
 
@@ -92,7 +92,11 @@ All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 
 ### Pentest Tools (7) — `pentest_tools.py`
 
-`subdomain_takeover_scan`, `http_security_scan`, `email_auth_audit`, `ssl_deep_scan`, `dns_zone_security`, `infrastructure_recon`, `exposure_report`
+`subdomain_takeover_scan`, `http_security_scan`, `email_security_audit`, `ssl_deep_scan`, `dns_zone_security`, `infrastructure_recon`, `exposure_report`
+
+### Security Tools (5) — `security_tools.py`
+
+`domain_reputation_check` (DNSBL), `zone_transfer_test` (AXFR), `mta_sts_check`, `dane_tlsa_check`, `website_fingerprint`
 
 ### Memory Tools (9) — `memory_tools.py`
 
@@ -102,9 +106,17 @@ All wrapped with `@langchain_core.tools.tool`, return JSON strings.
 
 **Preferences:** `set_explanation_mode`, `get_explanation_mode`
 
+### Snapshot Tools (3) — `memory_tools.py`
+
+`snapshot_domain`, `diff_snapshots`, `list_domain_snapshots`
+
 ### Workflow Tools (4) — `memory_tools.py`
 
 `tag_search`, `create_report`, `compare_domains`, `session_summary`
+
+### Escalation Tools (1) — `escalation_tools.py`
+
+`escalate` (delegate to a heavier-weight reasoning model)
 
 ---
 
@@ -154,7 +166,7 @@ Uses LangChain's `init_chat_model()` for provider abstraction.
 - `deepagents>=0.4` — LangChain agent framework (planning, delegation)
 - `rich>=13.0` — Terminal UI with markdown rendering
 - `scrolls>=0.1.0` — Skill documentation loader
-- `seer>=0.10.2` — PyO3 domain intelligence bindings
+- `seer>=0.24.0` — PyO3 domain intelligence bindings
 - `tome>=0.1.0` — PyO3 reference data bindings
 
 **Optional LLM providers:**

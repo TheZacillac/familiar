@@ -659,14 +659,22 @@ class TestWwwComparisonBothValid:
         assert len(ca_findings) == 1
         assert ca_findings[0]["severity"] == "LOW"
 
-    def test_missing_serial_reports_unknown(self):
-        """No serial_number on certs → same_certificate is None, not False."""
+    def test_missing_serial_falls_back_to_subject_issuer_valid_from(self):
+        """No serial_number → fingerprint falls back to (subject, issuer, valid_from)."""
+        # Identical certs sans serial → fingerprint matches → same cert.
         root = _ssl(serial=None)
         www = _ssl(serial=None)
         r = _invoke_deep_with_sides(root, www, _ROUTABLE_A, _ROUTABLE_A)
-        assert r["www_comparison"]["same_certificate"] is None
-        assert "could not compare" in r["www_comparison"]["summary"]
+        assert r["www_comparison"]["same_certificate"] is True
         assert not _find(r, text="different CAs")
+
+    def test_missing_serial_different_issuer_is_different_cert(self):
+        """Without serials, differing issuer in the fingerprint still flags as different."""
+        root = _ssl(serial=None, issuer="CN=LetsEncrypt")
+        www = _ssl(serial=None, issuer="CN=DigiCert")
+        r = _invoke_deep_with_sides(root, www, _ROUTABLE_A, _ROUTABLE_A)
+        assert r["www_comparison"]["same_certificate"] is False
+        assert len(_find(r, text="different CAs")) == 1
 
 
 class TestWwwComparisonMismatch:

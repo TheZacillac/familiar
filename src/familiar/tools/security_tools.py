@@ -15,7 +15,23 @@ from urllib.request import Request, urlopen
 import seer
 from langchain_core.tools import tool
 
-from ..utils import parallel_calls, safe_call
+from ..findings import sort_findings
+from ..seer_shape import record_field, record_text, record_value_dict
+from ..utils import parallel_calls, safe_call, ssl_probe_error
+
+
+def _try_ssl(domain: str):
+    """Call ``seer.ssl(domain)`` and preserve the error string on failure.
+
+    Local to this module so ``@patch("familiar.tools.security_tools.seer")``
+    in tests still intercepts the SSL call. Returns a normal ``seer.ssl``
+    result dict on success or a sentinel ``{"_ssl_error": "..."}`` dict
+    on failure.
+    """
+    try:
+        return seer.ssl(domain)
+    except Exception as e:
+        return {"_ssl_error": str(e)}
 
 # --- DNS-based blocklist providers ---
 # Each entry: (name, zone_suffix, query_type, description)
@@ -41,16 +57,10 @@ def _reverse_ip(ip: str) -> str:
 
 def _extract_address(record) -> str:
     """Extract IP address string from a seer dig record."""
-    if isinstance(record, dict):
-        data = record.get("data", record)
-        if isinstance(data, dict):
-            return data.get("address", "")
-        return str(data)
-    return str(record)
+    return record_field(record, "address")
 
 
-@tool
-def domain_reputation_check(domain: str) -> str:
+def _domain_reputation_check_impl(domain: str) -> dict:
     """Check a domain's reputation across DNS-based blocklists (DNSBL). Queries
     Spamhaus (ZEN+DBL), SURBL, URIBL, Barracuda, SpamCop, and others. Checks both
     the domain directly and its resolved IP addresses against IP-based blocklists."""
@@ -128,7 +138,7 @@ def domain_reputation_check(domain: str) -> str:
                 "recommendation": f"Investigate listing at {check['blocklist']} and request delisting if legitimate",
             })
 
-    return json.dumps({
+    return {
         "domain": domain,
         "resolved_ips": ips,
         "overall_status": overall_status,
@@ -136,8 +146,16 @@ def domain_reputation_check(domain: str) -> str:
         "listed_count": listed_count,
         "total_checks": len(checks),
         "checks": checks,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
-    }, default=str)
+        "findings": sort_findings(findings),
+    }
+
+
+@tool
+def domain_reputation_check(domain: str) -> str:
+    """Check a domain's reputation across DNS-based blocklists (DNSBL). Queries
+    Spamhaus (ZEN+DBL), SURBL, URIBL, Barracuda, SpamCop, and others. Checks both
+    the domain directly and its resolved IP addresses against IP-based blocklists."""
+    return json.dumps(_domain_reputation_check_impl(domain), default=str)
 
 
 def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
@@ -224,16 +242,10 @@ def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
 
 def _extract_nameserver(record) -> str:
     """Extract nameserver hostname from a seer dig NS record."""
-    if isinstance(record, dict):
-        data = record.get("data", record)
-        if isinstance(data, dict):
-            return data.get("nameserver", "").rstrip(".")
-        return str(data).rstrip(".")
-    return str(record).rstrip(".")
+    return record_field(record, "nameserver").rstrip(".")
 
 
-@tool
-def zone_transfer_test(domain: str) -> str:
+def _zone_transfer_test_impl(domain: str) -> dict:
     """Test whether a domain's nameservers allow unauthorized DNS zone transfers
     (AXFR). Zone transfers that succeed from arbitrary sources expose the entire
     DNS zone contents — a critical security finding in any pentest."""
@@ -248,14 +260,14 @@ def zone_transfer_test(domain: str) -> str:
             nameservers.append(ns)
 
     if not nameservers:
-        return json.dumps({
+        return {
             "domain": domain,
             "vulnerable": False,
             "nameservers_tested": [],
             "results": [],
             "findings": [],
             "note": "No nameservers found for this domain",
-        }, default=str)
+        }
 
     # Test each nameserver (max 4)
     test_ns = nameservers[:4]
@@ -286,23 +298,26 @@ def zone_transfer_test(domain: str) -> str:
 
         results.append(result_entry)
 
-    return json.dumps({
+    return {
         "domain": domain,
         "vulnerable": vulnerable,
         "nameservers_tested": test_ns,
         "results": results,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
-    }, default=str)
+        "findings": sort_findings(findings),
+    }
+
+
+@tool
+def zone_transfer_test(domain: str) -> str:
+    """Test whether a domain's nameservers allow unauthorized DNS zone transfers
+    (AXFR). Zone transfers that succeed from arbitrary sources expose the entire
+    DNS zone contents — a critical security finding in any pentest."""
+    return json.dumps(_zone_transfer_test_impl(domain), default=str)
 
 
 def _extract_txt_value(record) -> str:
     """Extract text value from a seer dig TXT record."""
-    if isinstance(record, dict):
-        data = record.get("data", record)
-        if isinstance(data, dict):
-            return data.get("text", data.get("value", str(data)))
-        return str(data)
-    return str(record)
+    return record_text(record)
 
 
 def _fetch_mta_sts_policy(domain: str, timeout: float = 5.0) -> dict:
@@ -321,8 +336,7 @@ def _fetch_mta_sts_policy(domain: str, timeout: float = 5.0) -> dict:
         return {"success": False, "error": str(e)}
 
 
-@tool
-def mta_sts_check(domain: str) -> str:
+def _mta_sts_check_impl(domain: str) -> dict:
     """Check MTA-STS (RFC 8461) and TLS-RPT (RFC 8460) configuration. MTA-STS
     enforces TLS for inbound email, preventing downgrade attacks. TLS-RPT enables
     reporting of TLS negotiation failures. Checks the _mta-sts TXT record, the
@@ -445,7 +459,7 @@ def mta_sts_check(domain: str) -> str:
             "recommendation": f"Add a TXT record at _smtp._tls.{domain} with v=TLSRPTv1; rua=mailto:tls-reports@{domain}",
         })
 
-    return json.dumps({
+    return {
         "domain": domain,
         "has_mx": has_mx,
         "mta_sts": {
@@ -453,8 +467,17 @@ def mta_sts_check(domain: str) -> str:
             "policy": sts_policy_info,
         },
         "tls_rpt": tlsrpt_info,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
-    }, default=str)
+        "findings": sort_findings(findings),
+    }
+
+
+@tool
+def mta_sts_check(domain: str) -> str:
+    """Check MTA-STS (RFC 8461) and TLS-RPT (RFC 8460) configuration. MTA-STS
+    enforces TLS for inbound email, preventing downgrade attacks. TLS-RPT enables
+    reporting of TLS negotiation failures. Checks the _mta-sts TXT record, the
+    .well-known/mta-sts.txt policy file, and the _smtp._tls TXT record."""
+    return json.dumps(_mta_sts_check_impl(domain), default=str)
 
 
 # DANE TLSA usage field descriptions
@@ -477,8 +500,7 @@ _TLSA_MATCHING = {
 }
 
 
-@tool
-def dane_tlsa_check(domain: str, port: int = 443) -> str:
+def _dane_tlsa_check_impl(domain: str, port: int = 443) -> dict:
     """Check DANE TLSA records (RFC 6698/7671) for a domain and port. DANE binds
     TLS certificates to DNS via DNSSEC, preventing CA compromise attacks. Checks
     _<port>._tcp.<domain> for TLSA records and validates against the actual
@@ -492,8 +514,14 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
     tlsa_records, dnssec_data, ssl_data = parallel_calls(
         (seer.dig, tlsa_name, "TLSA"),
         (seer.dnssec, domain),
-        (seer.ssl, domain),
+        (_try_ssl, domain),
     )
+
+    # Drop the _try_ssl sentinel so it never walks into the isinstance(dict)
+    # branch below; capture the reason for the certificate_info section.
+    ssl_error = ssl_probe_error(ssl_data)
+    if ssl_error:
+        ssl_data = None
 
     findings = []
 
@@ -501,47 +529,49 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
     parsed_tlsa = []
     if tlsa_records and isinstance(tlsa_records, list):
         for rec in tlsa_records:
-            if isinstance(rec, dict):
-                data = rec.get("data", rec)
-                if isinstance(data, dict):
-                    usage = data.get("usage", data.get("certificate_usage"))
-                    selector = data.get("selector")
-                    matching = data.get("matching_type")
-                    cert_data = data.get("certificate_data", data.get("certificate_association_data", ""))
+            fields = record_value_dict(rec)
+            if fields is not None:
+                usage = fields.get("usage", fields.get("certificate_usage"))
+                selector = fields.get("selector")
+                matching = fields.get("matching_type")
+                cert_data = fields.get(
+                    "certificate_data",
+                    fields.get("certificate_association_data", ""),
+                )
 
-                    entry = {
-                        "usage": usage,
-                        "usage_description": _TLSA_USAGE.get(usage, f"Unknown ({usage})"),
-                        "selector": selector,
-                        "selector_description": _TLSA_SELECTOR.get(selector, f"Unknown ({selector})"),
-                        "matching_type": matching,
-                        "matching_description": _TLSA_MATCHING.get(matching, f"Unknown ({matching})"),
-                        "certificate_data": str(cert_data)[:64] + ("..." if len(str(cert_data)) > 64 else ""),
-                    }
-                    parsed_tlsa.append(entry)
+                entry = {
+                    "usage": usage,
+                    "usage_description": _TLSA_USAGE.get(usage, f"Unknown ({usage})"),
+                    "selector": selector,
+                    "selector_description": _TLSA_SELECTOR.get(selector, f"Unknown ({selector})"),
+                    "matching_type": matching,
+                    "matching_description": _TLSA_MATCHING.get(matching, f"Unknown ({matching})"),
+                    "certificate_data": str(cert_data)[:64] + ("..." if len(str(cert_data)) > 64 else ""),
+                }
+                parsed_tlsa.append(entry)
 
-                    if usage in (0, 1):
-                        findings.append({
-                            "severity": "INFO",
-                            "finding": f"TLSA usage {usage} (PKIX-based) — requires both DANE match and CA validation",
-                            "detail": _TLSA_USAGE.get(usage, ""),
-                            "recommendation": "Ensure the certificate chain satisfies both PKIX and DANE constraints",
-                        })
-                    elif usage == 3:
-                        findings.append({
-                            "severity": "INFO",
-                            "finding": "TLSA usage 3 (DANE-EE) — strongest DANE mode, bypasses CA system",
-                            "detail": "The leaf certificate must match the TLSA record exactly. PKIX validation is not required.",
-                            "recommendation": "Update the TLSA record whenever the certificate is renewed",
-                        })
+                if usage in (0, 1):
+                    findings.append({
+                        "severity": "INFO",
+                        "finding": f"TLSA usage {usage} (PKIX-based) — requires both DANE match and CA validation",
+                        "detail": _TLSA_USAGE.get(usage, ""),
+                        "recommendation": "Ensure the certificate chain satisfies both PKIX and DANE constraints",
+                    })
+                elif usage == 3:
+                    findings.append({
+                        "severity": "INFO",
+                        "finding": "TLSA usage 3 (DANE-EE) — strongest DANE mode, bypasses CA system",
+                        "detail": "The leaf certificate must match the TLSA record exactly. PKIX validation is not required.",
+                        "recommendation": "Update the TLSA record whenever the certificate is renewed",
+                    })
 
-                    if matching == 0:
-                        findings.append({
-                            "severity": "LOW",
-                            "finding": "TLSA uses full certificate match (matching type 0) instead of a hash",
-                            "detail": "Full certificate data in DNS increases record size and is less common",
-                            "recommendation": "Consider SHA-256 (matching type 1) for smaller, more standard TLSA records",
-                        })
+                if matching == 0:
+                    findings.append({
+                        "severity": "LOW",
+                        "finding": "TLSA uses full certificate match (matching type 0) instead of a hash",
+                        "detail": "Full certificate data in DNS increases record size and is less common",
+                        "recommendation": "Consider SHA-256 (matching type 1) for smaller, more standard TLSA records",
+                    })
 
     dane_configured = len(parsed_tlsa) > 0
 
@@ -581,6 +611,10 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
                 "valid_until": leaf.get("valid_until"),
                 "is_valid": ssl_data.get("is_valid", False),
             }
+    elif ssl_error:
+        # Probe couldn't reach the cert — say so honestly rather than emitting
+        # an empty cert_info dict that downstream consumers might misread.
+        cert_info = {"probe_error": ssl_error, "probe_inconclusive": True}
 
     if not dane_configured:
         findings.append({
@@ -591,7 +625,7 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
                               "pinning independent of the CA system",
         })
 
-    return json.dumps({
+    return {
         "domain": domain,
         "port": port,
         "tlsa_name": tlsa_name,
@@ -599,8 +633,17 @@ def dane_tlsa_check(domain: str, port: int = 443) -> str:
         "dnssec_validated": dnssec_ok,
         "tlsa_records": parsed_tlsa,
         "certificate": cert_info,
-        "findings": sorted(findings, key=lambda f: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].index(f["severity"])),
-    }, default=str)
+        "findings": sort_findings(findings),
+    }
+
+
+@tool
+def dane_tlsa_check(domain: str, port: int = 443) -> str:
+    """Check DANE TLSA records (RFC 6698/7671) for a domain and port. DANE binds
+    TLS certificates to DNS via DNSSEC, preventing CA compromise attacks. Checks
+    _<port>._tcp.<domain> for TLSA records and validates against the actual
+    certificate. Common ports: 443 (HTTPS), 25 (SMTP), 587 (submission)."""
+    return json.dumps(_dane_tlsa_check_impl(domain, port), default=str)
 
 
 # Technology fingerprint patterns: (header_field, pattern, tech_name, category)
@@ -746,14 +789,9 @@ def website_fingerprint(domain: str) -> str:
     # DNS-based detection (CNAME fingerprinting)
     if cname_records and isinstance(cname_records, list):
         for rec in cname_records:
-            if isinstance(rec, dict):
-                data = rec.get("data", rec)
-                target = ""
-                if isinstance(data, dict):
-                    target = data.get("target", data.get("cname", "")).lower().rstrip(".")
-                else:
-                    target = str(data).lower().rstrip(".")
-
+            target = record_field(rec, "target") or record_field(rec, "cname")
+            target = target.lower().rstrip(".")
+            if target:
                 if "shopify" in target:
                     _add_tech("Shopify", "E-Commerce Platform", f"CNAME → {target}")
                 elif "squarespace" in target:

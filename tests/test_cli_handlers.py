@@ -201,67 +201,71 @@ class TestHandleExport:
             cli_mod._last_response = original
 
     @patch("familiar.cli.console")
-    def test_default_filename(self, mock_console, tmp_path):
-        """With a last response and no custom path, writes to default filename."""
+    def test_default_filename(self, mock_console, tmp_path, monkeypatch):
+        """With a last response and no custom path, writes to export_dir."""
         import familiar.cli as cli_mod
-        import os
+        from familiar import config
 
         original = cli_mod._last_response
-        original_cwd = os.getcwd()
         try:
             cli_mod._last_response = "# Test Report\nSome content here."
-            os.chdir(tmp_path)
+            monkeypatch.setattr(config, "export_dir", lambda: tmp_path)
             _handle_export("")
-            # Find the exported file
             exported = list(tmp_path.glob("familiar-export-*.md"))
             assert len(exported) == 1
             assert exported[0].read_text(encoding="utf-8") == "# Test Report\nSome content here."
         finally:
             cli_mod._last_response = original
-            os.chdir(original_cwd)
 
     @patch("familiar.cli.console")
-    def test_custom_path(self, mock_console, tmp_path):
-        """With a custom path, writes to that specific file."""
+    def test_custom_filename(self, mock_console, tmp_path, monkeypatch):
+        """With a custom filename, writes to export_dir with that name."""
         import familiar.cli as cli_mod
+        from familiar import config
 
         original = cli_mod._last_response
         try:
             cli_mod._last_response = "Custom export content."
+            monkeypatch.setattr(config, "export_dir", lambda: tmp_path)
+            _handle_export("my-report.md")
             target = tmp_path / "my-report.md"
-            _handle_export(str(target))
             assert target.exists()
             assert target.read_text(encoding="utf-8") == "Custom export content."
         finally:
             cli_mod._last_response = original
 
     @patch("familiar.cli.console")
-    def test_invalid_path_handled(self, mock_console):
-        """An invalid/unwritable path should print an error, not raise."""
+    def test_path_components_stripped(self, mock_console, tmp_path, monkeypatch):
+        """Directory components are stripped — only filename is used."""
         import familiar.cli as cli_mod
+        from familiar import config
 
         original = cli_mod._last_response
         try:
             cli_mod._last_response = "Some content."
-            # /dev/null/impossible is not a writable directory
-            _handle_export("/dev/null/impossible/file.md")
-            printed = mock_console.print.call_args[0][0]
-            assert "failed" in printed.lower() or "error" in printed.lower()
+            monkeypatch.setattr(config, "export_dir", lambda: tmp_path)
+            _handle_export("/some/deep/path/file.md")
+            # Should write to export_dir/file.md, not /some/deep/path/file.md
+            assert (tmp_path / "file.md").exists()
+            assert (tmp_path / "file.md").read_text(encoding="utf-8") == "Some content."
         finally:
             cli_mod._last_response = original
 
     @patch("familiar.cli.console")
-    def test_nested_directory_created(self, mock_console, tmp_path):
-        """Export to a nested path should create intermediate directories."""
+    def test_unwritable_dir_handled(self, mock_console, monkeypatch):
+        """An unwritable export directory should print an error, not raise."""
         import familiar.cli as cli_mod
+        from familiar import config
+        from pathlib import Path
 
         original = cli_mod._last_response
         try:
-            cli_mod._last_response = "Nested content."
-            target = tmp_path / "deep" / "nested" / "report.md"
-            _handle_export(str(target))
-            assert target.exists()
-            assert target.read_text(encoding="utf-8") == "Nested content."
+            cli_mod._last_response = "Some content."
+            # Point export_dir to a path that can't be written to
+            monkeypatch.setattr(config, "export_dir", lambda: Path("/dev/null/impossible"))
+            _handle_export("report.md")
+            printed = mock_console.print.call_args[0][0]
+            assert "failed" in printed.lower() or "error" in printed.lower()
         finally:
             cli_mod._last_response = original
 

@@ -127,6 +127,19 @@ Users may type these in the REPL — respond as if they asked the full question:
 /assess, /compare, /secure, /suggest, /acquire, /portfolio, /competitive, /migrate, \
 /watch, /unwatch, /watchlist, /check, /domains, /security, /brand, /dns, /timeline, \
 /expiry, /report, /tags, /summary, /pentest, /takeover, /headers, /recon, /vs
+
+## Model Escalation
+
+You have access to an `escalate` tool. Use it when a task exceeds your capabilities — \
+for example, complex multi-domain analysis, nuanced security assessments requiring careful \
+cross-referencing of multiple tool results, detailed advisory opinions, or any task where \
+you are uncertain about the quality of your answer. When in doubt, escalate — it is better \
+to hand off than to give a weak answer.
+
+When escalating, provide:
+- **reason**: a concise explanation of why this task needs a more capable model
+- **summary**: a structured handoff including the user's original intent, what you have \
+learned so far from any tool calls, and what the power model should focus on
 """
 
 
@@ -154,8 +167,8 @@ def _load_env():
                 os.environ.setdefault(key, value)
 
 
-def _load_skill_dir(skill_dir, heading_prefix="##") -> list[str]:
-    """Load SKILL.md and reference docs from a skill directory."""
+def _load_skill_dir(skill_dir, heading_prefix="##", include_references: bool = True) -> list[str]:
+    """Load SKILL.md (and optionally reference docs) from a skill directory."""
     sections = []
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.is_file():
@@ -168,34 +181,46 @@ def _load_skill_dir(skill_dir, heading_prefix="##") -> list[str]:
     if content:
         sections.append(f"{heading_prefix} {skill_dir.name.replace('-', ' ').title()} Skill Reference\n\n{content}")
 
-    # Load reference docs if available
-    ref_dir = skill_dir / "reference"
-    if ref_dir.is_dir():
-        for ref_file in sorted(ref_dir.glob("*.md")):
-            try:
-                ref_content = ref_file.read_text().strip()
-            except OSError:
-                continue
-            if ref_content:
-                sections.append(ref_content)
+    if include_references:
+        # Load reference docs if available
+        ref_dir = skill_dir / "reference"
+        if ref_dir.is_dir():
+            for ref_file in sorted(ref_dir.glob("*.md")):
+                try:
+                    ref_content = ref_file.read_text().strip()
+                except OSError:
+                    continue
+                if ref_content:
+                    sections.append(ref_content)
 
     # Recurse into sub-skills (e.g., other/email-auth/, other/typosquatting/)
     for child in sorted(skill_dir.iterdir()):
         if child.is_dir() and not child.name.startswith(("_", ".")) and child.name not in ("reference", "scripts"):
-            sections.extend(_load_skill_dir(child, heading_prefix=heading_prefix + "#"))
+            sections.extend(_load_skill_dir(
+                child,
+                heading_prefix=heading_prefix + "#",
+                include_references=include_references,
+            ))
 
     return sections
 
 
 def _load_skill_docs() -> str:
-    """Load skill documentation from scrolls to enrich the system prompt."""
+    """Load skill documentation from scrolls to enrich the system prompt.
+
+    Honors ``[agent].skill_docs_level``: ``"minimal"`` drops every
+    ``reference/*.md`` file (recommended for local 8k–32k context
+    models); the default ``"full"`` loads everything.
+    """
+    level = config.get("agent", "skill_docs_level", "full")
+    include_references = level != "minimal"
     sections = []
     for name in scrolls.list_skills():
         try:
             skill_dir = scrolls.skill_path(name)
         except FileNotFoundError:
             continue
-        sections.extend(_load_skill_dir(skill_dir))
+        sections.extend(_load_skill_dir(skill_dir, include_references=include_references))
 
     return "\n\n---\n\n".join(sections)
 
@@ -226,7 +251,7 @@ def _configure_tracing():
 
 
 def build_agent(checkpointer=None):
-    """Construct and return the LangGraph Deep Agent.
+    """Construct and return the LangGraph Deep Agent using the fast model.
 
     Args:
         checkpointer: Optional LangGraph checkpointer for persisting conversation
@@ -238,7 +263,7 @@ def build_agent(checkpointer=None):
     _configure_tracing()
 
     model = init_chat_model(
-        model=config.model_id(),
+        model=config.fast_model_id(),
         **config.model_kwargs(),
     )
 
@@ -247,6 +272,33 @@ def build_agent(checkpointer=None):
         tools=ALL_TOOLS,
         system_prompt=_build_system_prompt(),
         checkpointer=checkpointer,
+    )
+
+    return agent
+
+
+def build_power_agent():
+    """Construct a stateless agent using the power model, without the escalate tool.
+
+    Returns None if no power model is configured.
+    """
+    power_id = config.power_model_id()
+    if not power_id:
+        return None
+
+    model = init_chat_model(
+        model=power_id,
+        **config.model_kwargs(power_id),
+    )
+
+    # All tools except escalate — power model is the terminal tier
+    from .tools.escalation_tools import escalate
+    power_tools = [t for t in ALL_TOOLS if t is not escalate]
+
+    agent = create_deep_agent(
+        model=model,
+        tools=power_tools,
+        system_prompt=_build_system_prompt(),
     )
 
     return agent

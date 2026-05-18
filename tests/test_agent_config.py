@@ -1,31 +1,27 @@
-"""Test 12: Agent configuration — env parsing, model kwargs, system prompt.
+"""Test 12: Agent configuration — system prompt and model setup.
 
 Tests the pure functions in agent.py that can be validated without
 instantiating an LLM or making network calls.
 """
 
-import os
-import tempfile
-
 import pytest
 
+from familiar import config
 from familiar.agent import (
-    DEFAULT_MODEL,
     SYSTEM_PROMPT,
-    _build_model_kwargs,
     _build_system_prompt,
     _load_env,
 )
 
 
 class TestDefaultModel:
-    """Default model configuration."""
+    """Default model configuration via config module."""
 
-    def test_default_model_format(self):
-        assert ":" in DEFAULT_MODEL
-        provider, model = DEFAULT_MODEL.split(":", 1)
-        assert provider == "ollama"
-        assert len(model) > 0
+    def test_fast_model_format(self):
+        mid = config.fast_model_id()
+        assert ":" in mid
+        provider = mid.split(":")[0]
+        assert len(provider) > 0
 
 
 class TestSystemPrompt:
@@ -76,25 +72,23 @@ class TestBuildSystemPrompt:
         assert isinstance(_build_system_prompt(), str)
 
 
-class TestBuildModelKwargs:
-    """_build_model_kwargs must return correct provider-specific config."""
+class TestModelKwargs:
+    """model_kwargs must return correct provider-specific config."""
 
-    def test_ollama_with_base_url(self, monkeypatch):
-        monkeypatch.setenv("OLLAMA_BASE_URL", "http://custom:11434")
-        kwargs = _build_model_kwargs("ollama:llama3")
+    def test_ollama_with_base_url(self):
+        config.reload()
+        config._cfg["model"]["ollama"] = {"base_url": "http://custom:11434"}
+        kwargs = config.model_kwargs("ollama:llama3")
         assert kwargs["base_url"] == "http://custom:11434"
 
-    def test_ollama_without_base_url(self, monkeypatch):
-        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
-        kwargs = _build_model_kwargs("ollama:llama3")
-        assert "base_url" not in kwargs
-
     def test_non_ollama_provider(self):
-        kwargs = _build_model_kwargs("openai:gpt-4o")
+        config.reload()
+        kwargs = config.model_kwargs("openai:gpt-4o")
         assert kwargs == {}
 
     def test_no_provider_separator(self):
-        kwargs = _build_model_kwargs("some-model")
+        config.reload()
+        kwargs = config.model_kwargs("some-model")
         assert kwargs == {}
 
 
@@ -104,11 +98,8 @@ class TestLoadEnv:
     def test_loads_simple_key_value(self, monkeypatch, tmp_path):
         env_file = tmp_path / "src" / "familiar" / ".env"
         env_file.parent.mkdir(parents=True)
-        # _load_env looks two parents up from the agent module, so we
-        # test the parsing logic directly with a controlled file.
         env_file.write_text("TEST_LOAD_ENV_KEY=hello\n")
 
-        # Manually replicate the parsing logic on our controlled file
         monkeypatch.delenv("TEST_LOAD_ENV_KEY", raising=False)
         with open(env_file) as f:
             for line in f:
@@ -116,14 +107,15 @@ class TestLoadEnv:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, _, value = line.partition("=")
+                import os
                 os.environ.setdefault(key.strip(), value.strip())
 
+        import os
         assert os.environ.get("TEST_LOAD_ENV_KEY") == "hello"
         monkeypatch.delenv("TEST_LOAD_ENV_KEY", raising=False)
 
     def test_strips_quotes(self):
         """Quoted values should have quotes removed."""
-        # Test the quote-stripping logic directly
         value = '"quoted_value"'
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
             value = value[1:-1]
@@ -149,5 +141,6 @@ class TestLoadEnv:
     def test_setdefault_does_not_overwrite(self, monkeypatch):
         """Existing env vars should not be overwritten."""
         monkeypatch.setenv("EXISTING_VAR", "original")
+        import os
         os.environ.setdefault("EXISTING_VAR", "new_value")
         assert os.environ["EXISTING_VAR"] == "original"

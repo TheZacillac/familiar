@@ -13,7 +13,7 @@ dependencies = [
     "deepagents>=0.4",
     "rich>=13.0",
     "scrolls>=0.1.0",
-    "seer>=0.10.2",
+    "seer>=0.25.0",
     "tome>=0.1.0",
 ]
 
@@ -58,3 +58,7 @@ known-first-party = ["familiar"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: tests that hit real network — opt in with -m slow",
+]
+addopts = "-m 'not slow'"
