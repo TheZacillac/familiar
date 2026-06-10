@@ -144,3 +144,26 @@ class TestLoadEnv:
         import os
         os.environ.setdefault("EXISTING_VAR", "new_value")
         assert os.environ["EXISTING_VAR"] == "original"
+
+
+class TestSkillDocsCache:
+    """Skill docs are read from disk once per level, not per agent build —
+    build_power_agent() reuses the corpus build_agent() already loaded."""
+
+    def test_skill_docs_loaded_once_per_level(self, monkeypatch):
+        from familiar import agent
+
+        calls = {"n": 0}
+
+        def fake_list_skills():
+            calls["n"] += 1
+            return []
+
+        monkeypatch.setattr(agent.scrolls, "list_skills", fake_list_skills)
+        agent._load_skill_docs_cached.cache_clear()
+        try:
+            agent._load_skill_docs()
+            agent._load_skill_docs()
+            assert calls["n"] == 1
+        finally:
+            agent._load_skill_docs_cached.cache_clear()

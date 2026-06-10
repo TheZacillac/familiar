@@ -124,6 +124,23 @@ def ssl_probe_error(ssl_data) -> str | None:
     return None
 
 
+def truncate_list_field(data, field: str, cap: int):
+    """Cap ``data[field]`` to *cap* items, annotating ``total_found`` and
+    ``truncated`` so the LLM knows the list was cut. No-op when *data* isn't
+    a dict or *field* isn't a list. Mutates and returns *data*.
+
+    Tool results go straight into the model's context window — unbounded
+    lists (e.g. CT-log subdomain dumps) can be thousands of entries.
+    """
+    if isinstance(data, dict) and isinstance(data.get(field), list):
+        items = data[field]
+        data["total_found"] = len(items)
+        if len(items) > cap:
+            data[field] = items[:cap]
+            data["truncated"] = True
+    return data
+
+
 def days_until(raw) -> int | None:
     """Return days from now until a WHOIS/RDAP date, or None if unparseable.
 

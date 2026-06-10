@@ -845,3 +845,34 @@ class TestOutputStructure:
         _setup_healthy_seer(mock_seer)
         result = _invoke()
         assert isinstance(result["sections"], dict)
+
+
+# ---------------------------------------------------------------------------
+# Probe efficiency
+# ---------------------------------------------------------------------------
+
+
+class TestSslProbeEfficiency:
+    """exposure_report's sub-scans share one TLS probe per domain.
+
+    http_security, ssl_deep, and infrastructure_recon each probe the root
+    domain — without a shared per-invocation cache that is three real TLS
+    handshakes for identical data.
+    """
+
+    @patch("familiar.tools.pentest_tools.seer")
+    def test_each_domain_probed_once(self, mock_seer):
+        _setup_healthy_seer(mock_seer)
+        _invoke()
+        probed = [c.args[0] for c in mock_seer.ssl.call_args_list]
+        assert probed.count("example.com") == 1, probed
+        assert probed.count("www.example.com") == 1, probed
+
+    @patch("familiar.tools.pentest_tools.seer")
+    def test_standalone_tools_still_probe(self, mock_seer):
+        """Individual tools keep probing directly when run outside the report."""
+        from familiar.tools.pentest_tools import http_security_scan
+
+        _setup_healthy_seer(mock_seer)
+        json.loads(http_security_scan.invoke({"domain": "example.com"}))
+        assert mock_seer.ssl.call_count == 1

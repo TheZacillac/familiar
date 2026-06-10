@@ -715,7 +715,22 @@ def competitive_intel(domain: str) -> str:
     check_tlds = [t for t in check_tlds if t != original_tld]
     variant_domains = [f"{sld}.{tld}" for tld in check_tlds]
 
-    variant_results = safe_call(seer.bulk_lookup, variant_domains) or [None] * len(variant_domains)
+    # Variant bulk lookup + primary-domain probes in one concurrent batch —
+    # the bulk WHOIS/RDAP round-trip no longer delays the primary digs.
+    ci_rtypes = ("NS", "MX", "A", "AAAA", "TXT", "CNAME", "CAA")
+    ci_results = parallel_calls(
+        *[(seer.dig, domain, rt) for rt in ci_rtypes],
+        (seer.lookup, domain),
+        (seer.status, domain),
+        (seer.bulk_lookup, variant_domains),
+    )
+    dns_data = {}
+    for i, rtype in enumerate(ci_rtypes):
+        if ci_results[i]:
+            dns_data[rtype] = ci_results[i]
+    primary_lookup = _extract_registration(ci_results[len(ci_rtypes)])
+    status_data = ci_results[len(ci_rtypes) + 1]
+    variant_results = ci_results[len(ci_rtypes) + 2] or [None] * len(variant_domains)
 
     variants = {}
     for i, variant in enumerate(variant_domains):
@@ -732,20 +747,6 @@ def competitive_intel(domain: str) -> str:
                 if registered is True else None
             ),
         }
-
-    # Primary domain deep analysis — fan out all calls concurrently
-    ci_rtypes = ("NS", "MX", "A", "AAAA", "TXT", "CNAME", "CAA")
-    ci_results = parallel_calls(
-        *[(seer.dig, domain, rt) for rt in ci_rtypes],
-        (seer.lookup, domain),
-        (seer.status, domain),
-    )
-    dns_data = {}
-    for i, rtype in enumerate(ci_rtypes):
-        if ci_results[i]:
-            dns_data[rtype] = ci_results[i]
-    primary_lookup = _extract_registration(ci_results[len(ci_rtypes)])
-    status_data = ci_results[len(ci_rtypes) + 1]
 
     return json.dumps({
         "target": domain,

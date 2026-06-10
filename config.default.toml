@@ -26,13 +26,17 @@ export_dir = "~/.familiar/exports"
 [agent]
 # Thread pool size for parallel tool calls.
 # Seer's Rust core releases the GIL during I/O, so real parallelism is achieved.
-max_workers = 12
+# Sized for composite scans: exposure_report fans out 10 sub-scans that each
+# fan out again into this same shared pool.
+max_workers = 32
 
 # How much skill documentation to merge into the system prompt.
 #   "full"    — SKILL.md plus every reference/*.md (~30k tokens with the
-#               default skill set — needs a 128k+ context model).
+#               default skill set — needs a 128k+ context model, like the
+#               models configured above).
 #   "minimal" — only top-level SKILL.md files. Required for local
-#               8k–32k context models such as the default Ollama build.
+#               8k–32k context models. This is the built-in default when
+#               no config file is present.
 skill_docs_level = "full"
 
 # Fall back to a seer.rdap_ip lookup for IPs the local hosting-prefix
@@ -42,7 +46,9 @@ rdap_hosting_lookup = false
 
 [tracing]
 # LangSmith observability (pip install -e ".[tracing]")
-enabled = true
+# Set your API key before enabling — tracing with an empty key just
+# produces warnings on every run.
+enabled = false
 api_key = ""  # set your LangSmith API key here
 project = "familiar"
 

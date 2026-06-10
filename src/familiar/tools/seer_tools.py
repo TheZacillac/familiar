@@ -7,17 +7,21 @@ import time
 import seer
 from langchain_core.tools import tool
 
+from ..utils import truncate_list_field
+
 logger = logging.getLogger("familiar.tools.seer")
 
 
-def _seer_call(fn, *args, op: str, **kwargs) -> str:
+def _seer_call(fn, *args, op: str, _post=None, **kwargs) -> str:
     """Time, log, and serialize a seer call.
 
     On success, returns ``json.dumps(result, default=str)``. On failure,
     returns ``json.dumps({"error": str(e), "error_type": type(e).__name__})``
     so the LLM can distinguish e.g. a timeout from an NXDOMAIN from a
     library bug. The ``op`` string is used for log lines and should
-    identify the tool by name (``"seer_lookup"``, etc).
+    identify the tool by name (``"seer_lookup"``, etc). ``_post`` is an
+    optional transform applied to the result before serialization (e.g.
+    list truncation for token economy).
     """
     start = time.monotonic()
     logger.debug("%s called", op)
@@ -25,6 +29,8 @@ def _seer_call(fn, *args, op: str, **kwargs) -> str:
         result = fn(*args, **kwargs)
         elapsed = (time.monotonic() - start) * 1000
         logger.info("%s completed: elapsed_ms=%.1f", op, elapsed)
+        if _post is not None:
+            result = _post(result)
         return json.dumps(result, default=str)
     except Exception as e:
         elapsed = (time.monotonic() - start) * 1000
@@ -140,10 +146,17 @@ def seer_availability(domain: str) -> str:
     return _seer_call(seer.availability, domain, op="seer_availability")
 
 
+# CT logs can return thousands of subdomains; cap what reaches the LLM.
+_SUBDOMAIN_CAP = 100
+
+
 @tool
 def seer_subdomains(domain: str) -> str:
-    """Enumerate subdomains of a domain using Certificate Transparency logs. Returns discovered subdomains and count."""
-    return _seer_call(seer.subdomains, domain, op="seer_subdomains")
+    """Enumerate subdomains of a domain using Certificate Transparency logs. Returns up to 100 discovered subdomains plus total_found (and truncated=true when the list was capped)."""
+    return _seer_call(
+        seer.subdomains, domain, op="seer_subdomains",
+        _post=lambda r: truncate_list_field(r, "subdomains", _SUBDOMAIN_CAP),
+    )
 
 
 @tool

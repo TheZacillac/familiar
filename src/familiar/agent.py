@@ -1,5 +1,6 @@
 """LangGraph Deep Agent with configurable LLM provider."""
 
+import functools
 import os
 
 import scrolls
@@ -220,14 +221,11 @@ def _load_skill_dir(skill_dir, heading_prefix="##", include_references: bool = T
     return sections
 
 
-def _load_skill_docs() -> str:
-    """Load skill documentation from scrolls to enrich the system prompt.
-
-    Honors ``[agent].skill_docs_level``: ``"minimal"`` drops every
-    ``reference/*.md`` file (recommended for local 8k-32k context
-    models); the default ``"full"`` loads everything.
-    """
-    level = config.get("agent", "skill_docs_level", "full")
+@functools.lru_cache(maxsize=4)
+def _load_skill_docs_cached(level: str) -> str:
+    """Walk scrolls and read skill docs for *level*. Cached per level for the
+    process lifetime — skill files don't change at runtime, and the power
+    agent reuses the corpus the fast agent already loaded."""
     include_references = level != "minimal"
     sections = []
     for name in scrolls.list_skills():
@@ -238,6 +236,17 @@ def _load_skill_docs() -> str:
         sections.extend(_load_skill_dir(skill_dir, include_references=include_references))
 
     return "\n\n---\n\n".join(sections)
+
+
+def _load_skill_docs() -> str:
+    """Load skill documentation from scrolls to enrich the system prompt.
+
+    Honors ``[agent].skill_docs_level``: the default ``"minimal"`` loads
+    only top-level SKILL.md files (safe for small-context local models);
+    ``"full"`` adds every ``reference/*.md`` (~30k tokens — needs a
+    128k+ context model).
+    """
+    return _load_skill_docs_cached(config.get("agent", "skill_docs_level", "minimal"))
 
 
 def _build_system_prompt() -> str:

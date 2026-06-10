@@ -61,6 +61,34 @@ class TestSeerToolSuccessOutput:
         assert mock_seer.dig.call_args[0] == ("example.com", "A", "8.8.8.8")
 
     @patch("familiar.tools.seer_tools.seer")
+    def test_subdomains_truncated_at_cap(self, mock_seer):
+        """CT logs can return thousands of subdomains — the wrapper caps the
+        list for the LLM and reports the real total."""
+        from familiar.tools.seer_tools import seer_subdomains
+
+        mock_seer.subdomains.return_value = {
+            "domain": "big.com",
+            "subdomains": [f"s{i}.big.com" for i in range(250)],
+        }
+        parsed = json.loads(seer_subdomains.invoke({"domain": "big.com"}))
+        assert len(parsed["subdomains"]) == 100
+        assert parsed["truncated"] is True
+        assert parsed["total_found"] == 250
+
+    @patch("familiar.tools.seer_tools.seer")
+    def test_subdomains_small_list_untouched(self, mock_seer):
+        from familiar.tools.seer_tools import seer_subdomains
+
+        mock_seer.subdomains.return_value = {
+            "domain": "small.com",
+            "subdomains": ["a.small.com", "b.small.com"],
+        }
+        parsed = json.loads(seer_subdomains.invoke({"domain": "small.com"}))
+        assert len(parsed["subdomains"]) == 2
+        assert parsed["total_found"] == 2
+        assert "truncated" not in parsed
+
+    @patch("familiar.tools.seer_tools.seer")
     def test_status_returns_json(self, mock_seer):
         mock_seer.status.return_value = {"http_status": 200, "certificate": {"is_valid": True}}
         result = seer_status.invoke({"domain": "example.com"})

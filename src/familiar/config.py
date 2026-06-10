@@ -30,15 +30,18 @@ DEFAULTS = {
         "export_dir": "~/.familiar/exports",
     },
     "agent": {
-        "max_workers": 12,
+        # Sized for composite scans: exposure_report fans out 10 sub-scans
+        # that each fan out again into this same shared pool, so 12 threads
+        # left it heavily queued.
+        "max_workers": 32,
         # How much skill documentation to merge into the system prompt:
-        #   "full"    — SKILL.md plus every reference/*.md (default; large
-        #               prompt, ~30k tokens against the default skill set —
-        #               only suitable for 128k+ context models).
-        #   "minimal" — only top-level SKILL.md files. Recommended for
+        #   "minimal" — only top-level SKILL.md files (default). Safe for
         #               local 8k-32k context models such as the default
         #               Ollama nemotron build.
-        "skill_docs_level": "full",
+        #   "full"    — SKILL.md plus every reference/*.md (~30k tokens —
+        #               only suitable for 128k+ context models; opt in via
+        #               config.toml).
+        "skill_docs_level": "minimal",
         # When the local hosting-prefix table (pentest_tools._HOSTING_PREFIXES)
         # doesn't match an IP, fall back to a seer.rdap_ip lookup for
         # authoritative attribution. Results are cached per-process. Adds
@@ -235,7 +238,7 @@ def power_model_id() -> str | None:
 
 def max_workers() -> int:
     """Thread pool size for parallel calls."""
-    return get("agent", "max_workers", 12)
+    return get("agent", "max_workers", 32)
 
 
 def theme_dict() -> dict:
