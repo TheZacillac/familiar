@@ -420,6 +420,24 @@ class TestAuditPortfolio:
         assert len(result["domains"]) == 2
         # Should not crash — domains just have no data
 
+    @patch("familiar.tools.advisor_tools.seer")
+    def test_ssl_probe_failure_surfaced(self, mock_seer):
+        """A failed bulk_status probe must be flagged, not silently omitted."""
+        mock_seer.bulk_lookup.return_value = [_bulk_result(_whois_lookup())]
+        mock_seer.bulk_status.return_value = [_bulk_result(None, success=False)]
+        mock_seer.bulk_dig.side_effect = [
+            [_bulk_result(_txt_records_spf())],   # TXT
+            [_bulk_result(_mx_records())],        # MX
+            [_bulk_result(_ns_records())],        # NS
+            [_bulk_result(_txt_records_dmarc())],  # DMARC
+        ]
+
+        result = json.loads(audit_portfolio.invoke({"domains": "example.com"}))
+
+        entry = result["domains"][0]
+        assert entry["ssl_valid"] is None
+        assert any("could not be verified" in i.lower() for i in entry["issues"])
+
 
 # ===================================================================
 # 5. competitive_intel
@@ -588,6 +606,30 @@ class TestSecurityAudit:
         assert result["email_security"]["spf"]["found"] is True
         assert result["email_security"]["spf"]["policy"] == "softfail"
 
+    @patch("familiar.tools.advisor_tools.seer")
+    def test_dnssec_enabled_but_invalid_scored(self, mock_seer):
+        """Broken DNSSEC (enabled, invalid signatures) must add risk + recommendation.
+
+        Worse than no DNSSEC: validating resolvers fail to resolve the domain.
+        """
+        mock_seer.ssl.return_value = _ssl_report(valid=True)
+        mock_seer.dnssec.return_value = _dnssec_data(enabled=True, valid=False)
+        mock_seer.dig.side_effect = _dig_router(
+            TXT=_txt_records_spf(),
+            MX=_mx_records(),
+            **{"_dmarc.TXT": _txt_records_dmarc()},
+        )
+        mock_seer.status.return_value = _status_data()
+
+        result = json.loads(security_audit.invoke({"domain": "broken-dnssec.com"}))
+
+        assert result["dnssec_status"]["status"] == "warning"
+        assert result["risk_score"] >= 2
+        assert any(
+            "DNSSEC" in r and "invalid" in r.lower()
+            for r in result["recommendations"]
+        )
+
 
 # ===================================================================
 # 8. brand_protection_scan
@@ -669,6 +711,40 @@ class TestDnsHealthCheck:
         assert "records_missing" in result
         assert "propagation_status" in result
         assert "recommendations" in result
+
+    @patch("familiar.tools.advisor_tools.seer")
+    def test_dmarc_missing_with_mx_scored(self, mock_seer):
+        """MX without DMARC must lower the score and recommend adding DMARC."""
+        mock_seer.dig.side_effect = _dig_router(
+            A=_a_records(), AAAA=_aaaa_records(), MX=_mx_records(),
+            NS=_ns_records(), SOA=_soa_record(), TXT=_txt_records_spf(),
+            CAA=_caa_records(),
+        )
+        mock_seer.propagation.return_value = {"consistent": True}
+        mock_seer.dns_compare.return_value = {"match": True}
+
+        result = json.loads(dns_health_check.invoke({"domain": "nodmarc.com"}))
+
+        assert result["dmarc_status"]["found"] is False
+        assert any("DMARC" in r for r in result["recommendations"])
+        assert result["health_score"] < 100
+
+    @patch("familiar.tools.advisor_tools.seer")
+    def test_dmarc_present_full_score(self, mock_seer):
+        """Complete zone including DMARC scores 100."""
+        mock_seer.dig.side_effect = _dig_router(
+            A=_a_records(), AAAA=_aaaa_records(), MX=_mx_records(),
+            NS=_ns_records(), SOA=_soa_record(), TXT=_txt_records_spf(),
+            CAA=_caa_records(),
+            **{"_dmarc.TXT": _txt_records_dmarc()},
+        )
+        mock_seer.propagation.return_value = {"consistent": True}
+        mock_seer.dns_compare.return_value = {"match": True}
+
+        result = json.loads(dns_health_check.invoke({"domain": "complete.com"}))
+
+        assert result["dmarc_status"]["found"] is True
+        assert result["health_score"] == 100
 
     @patch("familiar.tools.advisor_tools.seer")
     def test_missing_records_flagged(self, mock_seer):

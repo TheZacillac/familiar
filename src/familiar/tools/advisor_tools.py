@@ -644,6 +644,10 @@ def audit_portfolio(domains: str) -> str:
             entry["http_status"] = st.get("http_status")
             entry["ssl_valid"] = cert.get("is_valid", False)
             entry["ssl_expiry"] = str(cert.get("valid_until", ""))
+        else:
+            # Probe failed — distinguish "couldn't check" from "no issue"
+            entry["issues"].append("SSL status could not be verified (probe failed)")
+            entry["ssl_valid"] = None
 
         # Email authentication checks (from bulk results) — unwrap BulkResult
         raw_txt = txt_bulk[i] if i < len(txt_bulk) else None
@@ -1066,6 +1070,15 @@ def security_audit(domain: str) -> str:
     if dnssec_status.get("status") == "not_configured":
         recommendations.append("Enable DNSSEC to protect against DNS spoofing attacks")
         risk_score += 1
+    elif dnssec_status.get("status") == "warning":
+        # Enabled but invalid — worse than unsigned: validating resolvers
+        # will SERVFAIL the domain entirely.
+        recommendations.append(
+            "IMPORTANT: DNSSEC is enabled but signatures are invalid — "
+            "fix DS/DNSKEY records immediately or resolution will fail "
+            "on validating resolvers"
+        )
+        risk_score += 2
 
     if email_security["has_mx"]:
         if not email_security["spf"]["found"]:
@@ -1246,11 +1259,12 @@ def dns_health_check(domain: str) -> str:
     nameserver comparison, and best practice compliance."""
     domain = domain.lower().strip()
 
-    # Check essential record types + propagation concurrently
+    # Check essential record types + propagation + DMARC concurrently
     essential_types = ["A", "AAAA", "MX", "NS", "SOA", "TXT", "CAA"]
     dhc_results = parallel_calls(
         *[(seer.dig, domain, rt) for rt in essential_types],
         (seer.propagation, domain, "A"),
+        (seer.dig, f"_dmarc.{domain}", "TXT"),
     )
     records_found = {}
     records_missing = []
@@ -1260,6 +1274,7 @@ def dns_health_check(domain: str) -> str:
         else:
             records_missing.append(rtype)
     propagation_status = dhc_results[len(essential_types)]
+    dmarc_records = dhc_results[len(essential_types) + 1]
 
     # Nameserver consistency check
     nameserver_consistency = None
@@ -1287,6 +1302,13 @@ def dns_health_check(domain: str) -> str:
             spf_found = True
             if len(spf_records) > 1:
                 spf_issues.append("Multiple SPF records found — only one is allowed per RFC 7208")
+
+    # DMARC presence (paired with SPF as email-auth best practice)
+    dmarc_found = False
+    if dmarc_records and isinstance(dmarc_records, list):
+        dmarc_found = any(
+            "v=dmarc1" in record_text(r).lower() for r in dmarc_records
+        )
 
     # SOA serial format check
     soa_info = None
@@ -1334,7 +1356,7 @@ def dns_health_check(domain: str) -> str:
         recommendations.append("Ensure at least 2 nameservers for redundancy")
 
     # Important records (weight 2)
-    # SPF only relevant when MX exists
+    # SPF/DMARC only relevant when MX exists
     has_mx = "MX" in records_found
     if has_mx:
         max_score += 2
@@ -1342,6 +1364,15 @@ def dns_health_check(domain: str) -> str:
             score += 2
         else:
             recommendations.append("Has MX records but no SPF — add SPF to prevent email spoofing")
+
+        max_score += 2
+        if dmarc_found:
+            score += 2
+        else:
+            recommendations.append(
+                "Has MX records but no DMARC — add a _dmarc TXT record for "
+                "email authentication policy"
+            )
 
     max_score += 2
     if "CAA" in records_found:
@@ -1372,6 +1403,7 @@ def dns_health_check(domain: str) -> str:
         "nameserver_consistency": nameserver_consistency,
         "soa_info": soa_info,
         "spf_status": {"found": spf_found, "issues": spf_issues},
+        "dmarc_status": {"found": dmarc_found},
         "recommendations": recommendations,
     }, default=str)
 

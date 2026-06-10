@@ -80,6 +80,10 @@ def seer_rdap_asn(asn: int) -> str:
 @tool
 def seer_dig(domain: str, record_type: str = "A", nameserver: str | None = None) -> str:
     """Query DNS records for a domain (like the dig command). Supports record types: A, AAAA, MX, TXT, NS, SOA, CNAME, CAA, PTR, SRV, ANY."""
+    # Omit the nameserver arg entirely when unset — every internal call site
+    # uses the two-arg form, and the PyO3 binding's default applies only then.
+    if nameserver is None:
+        return _seer_call(seer.dig, domain, record_type, op="seer_dig")
     return _seer_call(seer.dig, domain, record_type, nameserver, op="seer_dig")
 
 

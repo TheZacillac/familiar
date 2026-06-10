@@ -220,11 +220,18 @@ def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
                 return {"success": False, "error": f"DNS error RCODE={rcode}"}
 
             if ancount > 0:
+                # AXFR responses span multiple TCP messages; only the first is
+                # parsed here, so ancount is a lower bound (typically just the
+                # opening SOA). Enough to prove the transfer is open.
                 return {
                     "success": True,
                     "record_count": ancount,
+                    "first_message_only": True,
                     "response_size": len(response),
-                    "records_sample": [f"({ancount} records transferred — {len(response)} bytes)"],
+                    "records_sample": [
+                        f"(first response message: {ancount} record(s), "
+                        f"{len(response)} bytes — full zone is likely larger)"
+                    ],
                 }
 
             return {"success": False, "error": "No records in response"}
@@ -288,8 +295,9 @@ def _zone_transfer_test_impl(domain: str) -> dict:
             findings.append({
                 "severity": "CRITICAL",
                 "finding": f"Zone transfer (AXFR) allowed on {ns}",
-                "detail": f"Nameserver {ns} returned {axfr_result.get('record_count', '?')} records — "
-                          "entire zone contents exposed to unauthenticated queries",
+                "detail": f"Nameserver {ns} answered an unauthenticated AXFR with zone data "
+                          f"(at least {axfr_result.get('record_count', '?')} record(s) in the "
+                          "first response message) — the entire zone is exposed",
                 "recommendation": f"Restrict AXFR on {ns} to authorized secondary nameservers only "
                                   "(allow-transfer ACL in BIND, xfr-out in Knot, etc.)",
             })

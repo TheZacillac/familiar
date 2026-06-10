@@ -45,6 +45,22 @@ class TestSeerToolSuccessOutput:
         assert isinstance(parsed, list)
 
     @patch("familiar.tools.seer_tools.seer")
+    def test_dig_omits_default_nameserver(self, mock_seer):
+        """No nameserver given → seer.dig gets exactly two positional args,
+        matching every internal call site (never an explicit None)."""
+        mock_seer.dig.return_value = []
+        seer_dig.invoke({"domain": "example.com", "record_type": "A"})
+        assert mock_seer.dig.call_args[0] == ("example.com", "A")
+
+    @patch("familiar.tools.seer_tools.seer")
+    def test_dig_passes_explicit_nameserver(self, mock_seer):
+        mock_seer.dig.return_value = []
+        seer_dig.invoke({
+            "domain": "example.com", "record_type": "A", "nameserver": "8.8.8.8",
+        })
+        assert mock_seer.dig.call_args[0] == ("example.com", "A", "8.8.8.8")
+
+    @patch("familiar.tools.seer_tools.seer")
     def test_status_returns_json(self, mock_seer):
         mock_seer.status.return_value = {"http_status": 200, "certificate": {"is_valid": True}}
         result = seer_status.invoke({"domain": "example.com"})

@@ -857,3 +857,35 @@ class TestResolutionMismatch:
         www_findings = _find(r, text="www.example.com")
         high_www = [f for f in www_findings if f["severity"] == "HIGH"]
         assert len(high_www) == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  12. www-comparison probe-error forwarding
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestWwwComparisonProbeErrors:
+    """Every early-return branch must forward probe errors to _compare_www_cert.
+
+    Branch 3 (root reachable, genuine TLS failure) previously dropped
+    ssl_error/www_ssl_error, so a www probe that failed with a resolution
+    mismatch was misreported as 'no certificate'.
+    """
+
+    def test_genuine_root_cert_problem_keeps_www_mismatch_context(self):
+        def ssl_side(domain):
+            if domain.startswith("www."):
+                raise RuntimeError("did not resolve to a routable address")
+            raise ConnectionError("connection refused on port 443")
+
+        with patch("familiar.tools.pentest_tools.seer") as m:
+            m.ssl.side_effect = ssl_side
+            m.dig.side_effect = lambda domain, rtype, *a: (
+                [{"data": {"address": "93.184.216.34"}}] if rtype == "A" else []
+            )
+            r = json.loads(ssl_deep_scan.invoke({"domain": "t.com"}))
+
+        assert r.get("error") == "Could not retrieve SSL certificate"
+        cmp_detail = r.get("www_comparison")
+        assert cmp_detail
+        assert "resolution mismatch" in cmp_detail.get("summary", "")
+        assert cmp_detail.get("www_ssl_error")

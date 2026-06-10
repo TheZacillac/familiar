@@ -135,3 +135,37 @@ class TestRecallAllOrdering:
         assert len(all_domains) == 3
         assert all_domains[0]["domain"] == "newest.com"
         assert all_domains[2]["domain"] == "old.com"
+
+
+class TestClosedConnection:
+    """Every public method must fail cleanly (RuntimeError) after close().
+
+    close() runs via atexit while pool threads may still be mid-tool-call;
+    an unguarded method would surface an AttributeError on self._conn
+    instead of a clear "database is closed" error.
+    """
+
+    def test_methods_raise_runtime_error_after_close(self, memory):
+        memory.close()
+        cases = [
+            (memory.remember_domain, ("x.com",)),
+            (memory.recall_domain, ("x.com",)),
+            (memory.recall_all_domains, ()),
+            (memory.tag_search, ("tag",)),
+            (memory.watchlist_add, ("x.com",)),
+            (memory.watchlist_remove, ("x.com",)),
+            (memory.watchlist_list, ()),
+            (memory.watchlist_update_status, ("x.com", {"ok": True})),
+            (memory.get_preference, ("k",)),
+            (memory.set_preference, ("k", "v")),
+            (memory.save_snapshot, ("x.com", {"a": 1})),
+            (memory.list_snapshots, ("x.com",)),
+            (memory.diff_snapshots, (1, 2)),
+        ]
+        for fn, args in cases:
+            with pytest.raises(RuntimeError, match="closed"):
+                fn(*args)
+
+    def test_close_is_idempotent(self, memory):
+        memory.close()
+        memory.close()  # second close must not raise

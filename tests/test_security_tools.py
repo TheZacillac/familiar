@@ -74,6 +74,25 @@ class TestZoneTransferTest:
         assert result["findings"][0]["severity"] == "CRITICAL"
 
     @patch("familiar.tools.security_tools.seer")
+    @patch("familiar.tools.security_tools._attempt_axfr")
+    def test_vulnerable_detail_reports_lower_bound(self, mock_axfr, mock_seer):
+        """Only the first AXFR response message is parsed, so the record count
+        is a lower bound (typically just the opening SOA) — the finding must
+        say 'at least N', never imply a full-zone total."""
+        mock_seer.dig.return_value = [
+            {"data": {"nameserver": "ns1.example.com."}, "record_type": "NS"},
+        ]
+        mock_axfr.return_value = {
+            "success": True,
+            "record_count": 1,
+            "first_message_only": True,
+            "records_sample": ["(first response message: 1 record(s), 64 bytes)"],
+        }
+        result = json.loads(zone_transfer_test.invoke({"domain": "example.com"}))
+        detail = result["findings"][0]["detail"]
+        assert "at least 1" in detail
+
+    @patch("familiar.tools.security_tools.seer")
     def test_no_nameservers(self, mock_seer):
         mock_seer.dig.return_value = []
         result = json.loads(zone_transfer_test.invoke({"domain": "noname.com"}))

@@ -101,6 +101,7 @@ class Memory:
     def recall_all_domains(self) -> list[dict]:
         """List all domains in the notebook, most recently seen first."""
         with self._lock:
+            self._check_open_locked()
             rows = self._conn.execute(
                 "SELECT * FROM domain_notes ORDER BY last_seen DESC"
             ).fetchall()
@@ -112,6 +113,7 @@ class Memory:
         # Escape LIKE wildcards to prevent unintended pattern matching
         escaped_tag = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self._lock:
+            self._check_open_locked()
             rows = self._conn.execute(
                 "SELECT * FROM domain_notes WHERE tags LIKE ? ESCAPE '\\' ORDER BY last_seen DESC",
                 (f"%{escaped_tag}%",),
@@ -143,6 +145,7 @@ class Memory:
         now = datetime.now(UTC).isoformat()
         domain = domain.lower().strip()
         with self._lock:
+            self._check_open_locked()
             cursor = self._conn.execute(
                 "INSERT OR IGNORE INTO watchlist (domain, added) VALUES (?, ?)",
                 (domain, now),
@@ -163,6 +166,7 @@ class Memory:
         """Remove a domain from the watchlist."""
         domain = domain.lower().strip()
         with self._lock:
+            self._check_open_locked()
             cursor = self._conn.execute("DELETE FROM watchlist WHERE domain = ?", (domain,))
             self._conn.commit()
             status = "removed" if cursor.rowcount > 0 else "not_found"
@@ -171,6 +175,7 @@ class Memory:
     def watchlist_list(self) -> list[dict]:
         """List all watched domains."""
         with self._lock:
+            self._check_open_locked()
             rows = self._conn.execute(
                 "SELECT * FROM watchlist ORDER BY added DESC"
             ).fetchall()
@@ -180,6 +185,7 @@ class Memory:
         """Update the last check status for a watched domain."""
         now = datetime.now(UTC).isoformat()
         with self._lock:
+            self._check_open_locked()
             self._conn.execute(
                 "UPDATE watchlist SET last_checked = ?, last_status = ? WHERE domain = ?",
                 (now, json.dumps(status, default=str), domain),
@@ -191,6 +197,7 @@ class Memory:
     def get_preference(self, key: str, default: str = "") -> str:
         """Get a preference value."""
         with self._lock:
+            self._check_open_locked()
             row = self._conn.execute(
                 "SELECT value FROM preferences WHERE key = ?", (key,)
             ).fetchone()
@@ -199,6 +206,7 @@ class Memory:
     def set_preference(self, key: str, value: str) -> None:
         """Set a preference value."""
         with self._lock:
+            self._check_open_locked()
             self._conn.execute(
                 "INSERT OR REPLACE INTO preferences (key, value) VALUES (?, ?)",
                 (key, value),
@@ -229,6 +237,7 @@ class Memory:
         """List snapshots for a domain, most recent first."""
         domain = domain.lower().strip()
         with self._lock:
+            self._check_open_locked()
             rows = self._conn.execute(
                 "SELECT id, domain, data, captured_at FROM domain_snapshots "
                 "WHERE domain = ? ORDER BY captured_at DESC LIMIT ?",
@@ -247,6 +256,7 @@ class Memory:
     def diff_snapshots(self, snapshot_id_a: int, snapshot_id_b: int) -> dict:
         """Compare two snapshots and return the differences."""
         with self._lock:
+            self._check_open_locked()
             row_a = self._conn.execute(
                 "SELECT id, domain, data, captured_at FROM domain_snapshots WHERE id = ?",
                 (snapshot_id_a,),
