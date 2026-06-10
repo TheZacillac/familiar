@@ -8,12 +8,8 @@ import re
 
 import pytest
 
-from familiar.cli import (
-    SLASH_COMMANDS,
-    _CHECKBOX_NUMBER_RE,
-    _extract_messages,
-    _tool_status,
-)
+from familiar.cli import SLASH_COMMANDS, _extract_messages
+from familiar.cli_common import CHECKBOX_NUMBER_RE, tool_status
 
 
 class TestSlashCommands:
@@ -52,44 +48,44 @@ class TestSlashCommands:
 
 
 class TestToolStatus:
-    """_tool_status formats tool calls into human-readable strings."""
+    """tool_status formats tool calls into human-readable strings."""
 
     def test_domain_arg(self):
-        result = _tool_status("seer_lookup", {"domain": "example.com"})
+        result = tool_status("seer_lookup", {"domain": "example.com"})
         assert "example.com" in result
 
     def test_query_arg(self):
-        result = _tool_status("tome_tld_search", {"query": "tech"})
+        result = tool_status("tome_tld_search", {"query": "tech"})
         assert "tech" in result
 
     def test_brand_arg(self):
-        result = _tool_status("suggest_domains", {"brand": "acme"})
+        result = tool_status("suggest_domains", {"brand": "acme"})
         assert "acme" in result
 
     def test_domains_list_arg(self):
-        result = _tool_status("seer_bulk_lookup", {"domains": ["a.com", "b.com", "c.com", "d.com"]})
+        result = tool_status("seer_bulk_lookup", {"domains": ["a.com", "b.com", "c.com", "d.com"]})
         assert "a.com" in result
         assert "+1 more" in result
 
     def test_no_args(self):
-        result = _tool_status("watchlist_list")
+        result = tool_status("watchlist_list")
         assert isinstance(result, str)
         assert len(result) > 0
 
     def test_strips_seer_prefix(self):
-        result = _tool_status("seer_lookup", {"domain": "test.com"})
+        result = tool_status("seer_lookup", {"domain": "test.com"})
         assert not result.lower().startswith("seer")
 
     def test_strips_tome_prefix(self):
-        result = _tool_status("tome_tld_lookup", {"query": "com"})
+        result = tool_status("tome_tld_lookup", {"query": "com"})
         assert not result.lower().startswith("tome")
 
     def test_underscores_replaced(self):
-        result = _tool_status("some_long_tool_name")
+        result = tool_status("some_long_tool_name")
         assert "_" not in result
 
     def test_capitalized(self):
-        result = _tool_status("simple_tool")
+        result = tool_status("simple_tool")
         assert result[0].isupper()
 
 
@@ -125,7 +121,7 @@ class TestExtractMessages:
 
 
 class TestCheckboxRegex:
-    """_CHECKBOX_NUMBER_RE must fix checkboxes jammed against numbers."""
+    """CHECKBOX_NUMBER_RE must fix checkboxes jammed against numbers."""
 
     @pytest.mark.parametrize("input_str,expected", [
         ("□1. First item", "□ 1. First item"),
@@ -135,15 +131,15 @@ class TestCheckboxRegex:
         ("✗5 Fail", "✗ 5 Fail"),
     ])
     def test_checkbox_number_fixed(self, input_str, expected):
-        result = _CHECKBOX_NUMBER_RE.sub(r"\1 \2", input_str)
+        result = CHECKBOX_NUMBER_RE.sub(r"\1 \2", input_str)
         assert result == expected
 
     def test_no_change_when_already_spaced(self):
         text = "□ 1. Already spaced"
-        result = _CHECKBOX_NUMBER_RE.sub(r"\1 \2", text)
+        result = CHECKBOX_NUMBER_RE.sub(r"\1 \2", text)
         assert result == text
 
     def test_no_change_for_normal_text(self):
         text = "Normal text without checkboxes"
-        result = _CHECKBOX_NUMBER_RE.sub(r"\1 \2", text)
+        result = CHECKBOX_NUMBER_RE.sub(r"\1 \2", text)
         assert result == text

@@ -1,5 +1,6 @@
 """CLI entry point for the Familiar agent (LangChain Deep Agents engine)."""
 
+import json
 import logging
 import sys
 import uuid
@@ -25,7 +26,8 @@ from rich.prompt import Prompt
 from rich.theme import Theme
 
 from . import config
-from .agent import build_agent
+from .agent import build_agent, build_power_agent
+from .tools.escalation_tools import ESCALATION_MARKER
 from .cli_common import (
     CHECKBOX_NUMBER_RE,
     SLASH_COMMANDS,
@@ -40,6 +42,79 @@ console = Console(theme=Theme(config.theme_dict()))
 
 # Track the last agent response for /export
 _last_response: str | None = None
+
+# Power agent is built lazily on first escalation and reused for the session.
+# False means "tried and failed/unconfigured" so we don't rebuild every turn.
+_power_agent = None
+
+
+def _detect_escalation(msg) -> dict | None:
+    """Return the escalation payload if *msg* is an `escalate` tool result."""
+    if getattr(msg, "type", None) != "tool":
+        return None
+    content = getattr(msg, "content", None)
+    if not isinstance(content, str) or ESCALATION_MARKER not in content:
+        return None
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(payload, dict) and payload.get("status") == ESCALATION_MARKER:
+        return payload
+    return None
+
+
+def _build_handoff_message(reason: str, summary: str, original_query: str) -> str:
+    """Format the fast→power handoff prompt sent to the power model."""
+    return (
+        "[Escalated from the fast model — you are the power tier. "
+        "Take over and complete this task.]\n\n"
+        f"## Original request\n{original_query}\n\n"
+        f"## Why this was escalated\n{reason}\n\n"
+        f"## Handoff summary from the fast model\n{summary}\n\n"
+        "Address the original request fully. Build on the handoff summary, but "
+        "re-verify any findings it presents as uncertain rather than trusting "
+        "them blindly."
+    )
+
+
+def _get_power_agent():
+    """Build the power agent once per session; None if unconfigured/broken."""
+    global _power_agent
+    if _power_agent is None:
+        try:
+            _power_agent = build_power_agent() or False
+        except Exception as e:
+            logger.warning("build_power_agent failed: %s", e)
+            console.print(f"[warning]Power model unavailable: {e}[/warning]")
+            _power_agent = False
+    return _power_agent or None
+
+
+def _run_power(query: str, escalation: dict) -> str | None:
+    """Hand off an escalated query to the power model. Returns its answer."""
+    power = _get_power_agent()
+    if power is None:
+        console.print(
+            "[warning]Escalation requested, but no power model is configured — "
+            "set [bold]model.power[/bold] in config.toml.[/warning]"
+        )
+        return None
+
+    handoff = _build_handoff_message(
+        reason=escalation.get("reason", ""),
+        summary=escalation.get("summary", ""),
+        original_query=query,
+    )
+    console.print("[info]Escalating to power model...[/info]")
+    # Power agent is stateless (no checkpointer) — fresh thread per handoff.
+    power_config = {"configurable": {"thread_id": uuid.uuid4().hex}}
+    try:
+        result, _ = _stream_invoke(power, handoff, power_config)
+    except Exception as e:
+        console.print(f"[error]Power model error: {e}[/error]")
+        return None
+    return result
 
 
 def _extract_messages(update) -> list:
@@ -61,8 +136,11 @@ def _extract_messages(update) -> list:
     return raw
 
 
-def _stream_invoke(agent, content: str, config: dict) -> str | None:
+def _stream_invoke(agent, content: str, config: dict) -> tuple[str | None, dict | None]:
     """Stream agent execution, showing tool activity on the status line.
+
+    Returns ``(final_content, escalation)`` where *escalation* is the payload
+    of the first `escalate` tool result seen in the stream, or None.
 
     With ``stream_mode="updates"`` LangGraph emits the full checkpoint
     state (including prior turns) in every node update.  We pre-seed
@@ -70,6 +148,7 @@ def _stream_invoke(agent, content: str, config: dict) -> str | None:
     *new* messages from this invocation are captured.
     """
     final_content = None
+    escalation: dict | None = None
     tool_count = 0
 
     # Pre-seed with all message IDs already in the checkpoint so that
@@ -133,7 +212,14 @@ def _stream_invoke(agent, content: str, config: dict) -> str | None:
 
                     # Tool result returned — back to analysis
                     elif hasattr(msg, "type") and msg.type == "tool":
-                        status.update("[spinner]Analyzing results...[/spinner]")
+                        found = _detect_escalation(msg)
+                        if found and escalation is None:
+                            escalation = found
+                            status.update(
+                                "[spinner]Escalation requested...[/spinner]"
+                            )
+                        else:
+                            status.update("[spinner]Analyzing results...[/spinner]")
 
                     # Final AI response (no tool calls) — accumulate in
                     # case the agent emits multiple non-tool AI messages
@@ -154,18 +240,24 @@ def _stream_invoke(agent, content: str, config: dict) -> str | None:
                                 "[spinner]Composing response...[/spinner]"
                             )
 
-    return final_content
+    return final_content, escalation
 
 
-def _print_response(content: str):
-    """Render agent response as markdown in a styled panel."""
+def _print_response(content: str, model_label: str | None = None):
+    """Render agent response as markdown in a styled panel.
+
+    *model_label* tags the panel title with the responding tier (e.g. "power").
+    """
     # Fix checkboxes jammed against numbers (e.g. "□1" → "□ 1")
     content = CHECKBOX_NUMBER_RE.sub(r"\1 \2", content)
     md = Markdown(content)
+    title = "[title]familiar[/title]"
+    if model_label:
+        title += f" [muted]({model_label})[/muted]"
     console.print(
         Panel(
             md,
-            title="[title]familiar[/title]",
+            title=title,
             title_align="left",
             border_style="border",
         )
@@ -173,19 +265,34 @@ def _print_response(content: str):
 
 
 def _invoke_agent(agent, query: str, config: dict) -> str | None:
-    """Invoke the agent with streaming status and print the response."""
+    """Invoke the agent with streaming status and print the response.
+
+    When the fast model calls the `escalate` tool, the query is handed off
+    to the power model and its answer replaces the fast model's.
+    """
     global _last_response
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
-        result = _stream_invoke(agent, content, config)
+        result, escalation = _stream_invoke(agent, content, config)
     except Exception as e:
         console.print(f"[error]Error: {e}[/error]")
         return None
 
+    model_label = None
+    if escalation:
+        power_result = _run_power(query, escalation)
+        if power_result:
+            result, model_label = power_result, "power"
+        elif result:
+            console.print(
+                "[warning]Escalation did not complete — "
+                "showing the fast model's answer.[/warning]"
+            )
+
     if result:
         console.print()
-        _print_response(result)
+        _print_response(result, model_label=model_label)
         console.print()
         _last_response = result
     return result
@@ -238,13 +345,19 @@ def _run_once(agent, query: str):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
-        result = _stream_invoke(agent, content, config)
+        result, escalation = _stream_invoke(agent, content, config)
     except Exception as e:
         console.print(f"[error]Error: {e}[/error]")
         sys.exit(1)
 
+    model_label = None
+    if escalation:
+        power_result = _run_power(query, escalation)
+        if power_result:
+            result, model_label = power_result, "power"
+
     if result:
-        _print_response(result)
+        _print_response(result, model_label=model_label)
 
 
 def _repl(agent):
