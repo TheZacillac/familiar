@@ -11,11 +11,11 @@ from ..seer_shape import (
     lookup_to_registration,
     record_field,
     record_text,
-    record_value_dict,
     status_certificate,
     unwrap_bulk,
 )
-from ..utils import days_until as _days_until, parallel_calls, safe_call, ssl_probe_error
+from ..utils import days_until as _days_until
+from ..utils import parallel_calls, safe_call, ssl_probe_error
 
 
 def _try_ssl(domain: str):
@@ -886,7 +886,7 @@ def migration_preflight(domain: str, target_nameservers: str = "") -> str:
         ns_a_results = parallel_calls(*[(seer.dig, ns, "A") for ns in target_ns])
         ns_validation = {
             ns: {"resolves": bool(r), "addresses": r}
-            for ns, r in zip(target_ns, ns_a_results)
+            for ns, r in zip(target_ns, ns_a_results, strict=True)
         }
 
     return json.dumps({
@@ -958,9 +958,7 @@ def security_audit(domain: str) -> str:
             days_left = _days_until(ssl_health["expiry"])
             if days_left is not None:
                 ssl_health["days_until_expiry"] = days_left
-                if not is_valid:
-                    ssl_health["status"] = "critical"
-                elif days_left < 7:
+                if not is_valid or days_left < 7:
                     ssl_health["status"] = "critical"
                 elif days_left < 30:
                     ssl_health["status"] = "warning"
@@ -1633,10 +1631,7 @@ def _audit_one(domain: str) -> dict:
         days_left = _days_until(leaf.get("valid_until")) if leaf.get("valid_until") else None
         if days_left is not None:
             ssl_section["days_until_expiry"] = days_left
-        if not ssl_section["valid"]:
-            ssl_section["status"] = "critical"
-            risk_score += 3
-        elif days_left is not None and days_left < 7:
+        if not ssl_section["valid"] or (days_left is not None and days_left < 7):
             ssl_section["status"] = "critical"
             risk_score += 3
         elif days_left is not None and days_left < 30:
@@ -1879,7 +1874,6 @@ def _summarize_infra(infra: dict) -> str:
 
 
 def _summarize_http(http: dict) -> str:
-    st = http.get("status", "unknown")
     code = http.get("http_status")
     ssl_ok = http.get("ssl_valid")
     parts = []

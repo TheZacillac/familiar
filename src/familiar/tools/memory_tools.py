@@ -3,14 +3,15 @@
 import atexit
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import seer
 from langchain_core.tools import tool
 
 from ..memory import Memory
 from ..seer_shape import record_field
-from ..utils import days_until as _days_until, parallel_calls, safe_call
+from ..utils import days_until as _days_until
+from ..utils import parallel_calls, safe_call
 
 # Module-level singleton, initialized lazily with double-checked locking
 _memory: Memory | None = None
@@ -276,7 +277,7 @@ def create_report(title: str, sections: str) -> str:
     except (json.JSONDecodeError, TypeError) as e:
         return json.dumps({"error": f"Invalid sections JSON: {e}"})
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     lines = [
         f"# {title}",

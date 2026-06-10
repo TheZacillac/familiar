@@ -131,8 +131,8 @@ def bootstrap() -> ClaudeAgentOptions:
 
 
 __all__ = [
-    "MCP_SERVER_NAME",
     "DEFAULT_CLAUDE_MODEL",
+    "MCP_SERVER_NAME",
     "bootstrap",
     "build_mcp_server",
     "build_options",

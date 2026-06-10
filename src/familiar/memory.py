@@ -3,7 +3,7 @@
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config
@@ -65,7 +65,7 @@ class Memory:
 
     def remember_domain(self, domain: str, notes: str = "", tags: str = "") -> dict:
         """Save or update a domain in the notebook. Appends notes, merges tags."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         domain = domain.lower().strip()
         with self._lock:
             self._check_open_locked()
@@ -140,7 +140,7 @@ class Memory:
 
     def watchlist_add(self, domain: str) -> dict:
         """Add a domain to the watchlist."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         domain = domain.lower().strip()
         with self._lock:
             cursor = self._conn.execute(
@@ -178,7 +178,7 @@ class Memory:
 
     def watchlist_update_status(self, domain: str, status: dict) -> None:
         """Update the last check status for a watched domain."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.execute(
                 "UPDATE watchlist SET last_checked = ?, last_status = ? WHERE domain = ?",
@@ -209,7 +209,7 @@ class Memory:
 
     def save_snapshot(self, domain: str, data: dict) -> dict:
         """Save a structured snapshot of a domain's current state."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         domain = domain.lower().strip()
         data_json = json.dumps(data, default=str)
         with self._lock:

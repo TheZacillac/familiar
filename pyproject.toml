@@ -51,6 +51,14 @@ select = [
     "SIM",  # flake8-simplify
     "RUF",  # ruff-specific
 ]
+# E501: long lines are dominated by human-written prose in tool docstrings
+# and finding text — not worth the churn to wrap.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Both CLIs configure logging/warnings before heavier imports on purpose.
+"src/familiar/cli.py" = ["E402"]
+"src/familiar/cli_claude.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["familiar"]

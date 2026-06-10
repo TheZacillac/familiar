@@ -245,6 +245,23 @@ class TestCaaPolicy:
         assert findings[0]["severity"] == "MEDIUM"
 
     @patch("familiar.tools.pentest_tools.seer")
+    def test_caa_no_issue_tag(self, mock_seer):
+        """6b. CAA present but no issue tag => MEDIUM finding (issuance unrestricted)."""
+        mock_seer.dig.side_effect = _make_dig_side_effect(
+            ns=_HEALTHY_NS, soa=_HEALTHY_SOA,
+            caa=_caa_records([("issuewild", ";"), ("iodef", "mailto:sec@x.com")]),
+            a=_HEALTHY_A,
+        )
+        mock_seer.dnssec.return_value = _HEALTHY_DNSSEC
+        mock_seer.propagation.return_value = _HEALTHY_PROPAGATION
+        mock_seer.dns_compare.return_value = _dns_compare_result(matches=True)
+
+        result = _invoke()
+        findings = _findings_containing(result, "No CAA issue tag")
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "MEDIUM"
+
+    @patch("familiar.tools.pentest_tools.seer")
     def test_caa_no_iodef(self, mock_seer):
         """7. CAA present but no iodef => LOW finding."""
         mock_seer.dig.side_effect = _make_dig_side_effect(

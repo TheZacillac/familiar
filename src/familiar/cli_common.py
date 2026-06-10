@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rich.console import Console
 from rich.table import Table
@@ -238,8 +238,8 @@ def startup_check(console: Console) -> None:
                 try:
                     checked = datetime.fromisoformat(last)
                     if checked.tzinfo is None:
-                        checked = checked.replace(tzinfo=timezone.utc)
-                    if (datetime.now(timezone.utc) - checked).days >= 1:
+                        checked = checked.replace(tzinfo=UTC)
+                    if (datetime.now(UTC) - checked).days >= 1:
                         stale += 1
                 except (ValueError, TypeError):
                     stale += 1
@@ -281,11 +281,11 @@ def export_last_response(
 
 
 __all__ = [
-    "SLASH_COMMANDS",
     "CHECKBOX_NUMBER_RE",
-    "tool_status",
-    "show_help",
-    "handle_teach",
-    "startup_check",
+    "SLASH_COMMANDS",
     "export_last_response",
+    "handle_teach",
+    "show_help",
+    "startup_check",
+    "tool_status",
 ]

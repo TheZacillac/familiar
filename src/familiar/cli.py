@@ -5,7 +5,7 @@ import logging
 import sys
 import uuid
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 warnings.filterwarnings("ignore", message="Core Pydantic V1")
 
@@ -27,7 +27,6 @@ from rich.theme import Theme
 
 from . import config
 from .agent import build_agent, build_power_agent
-from .tools.escalation_tools import ESCALATION_MARKER
 from .cli_common import (
     CHECKBOX_NUMBER_RE,
     SLASH_COMMANDS,
@@ -37,6 +36,7 @@ from .cli_common import (
     startup_check,
     tool_status,
 )
+from .tools.escalation_tools import ESCALATION_MARKER
 
 console = Console(theme=Theme(config.theme_dict()))
 
@@ -271,7 +271,7 @@ def _invoke_agent(agent, query: str, config: dict) -> str | None:
     to the power model and its answer replaces the fast model's.
     """
     global _last_response
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
         result, escalation = _stream_invoke(agent, content, config)
@@ -342,7 +342,7 @@ def main():
 def _run_once(agent, query: str):
     """Run a single query and print the response."""
     config = {"configurable": {"thread_id": uuid.uuid4().hex}}
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     content = f"[Current date/time: {now}]\n\n{query}"
     try:
         result, escalation = _stream_invoke(agent, content, config)
@@ -389,9 +389,8 @@ def _repl(agent):
             break
 
         # Handle slash commands
-        if query.strip().startswith("/"):
-            if _handle_slash(query, agent, config):
-                continue
+        if query.strip().startswith("/") and _handle_slash(query, agent, config):
+            continue
 
         # Normal agent invocation
         _invoke_agent(agent, query, config)

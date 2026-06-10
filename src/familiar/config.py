@@ -36,7 +36,7 @@ DEFAULTS = {
         #               prompt, ~30k tokens against the default skill set —
         #               only suitable for 128k+ context models).
         #   "minimal" — only top-level SKILL.md files. Recommended for
-        #               local 8k–32k context models such as the default
+        #               local 8k-32k context models such as the default
         #               Ollama nemotron build.
         "skill_docs_level": "full",
         # When the local hosting-prefix table (pentest_tools._HOSTING_PREFIXES)

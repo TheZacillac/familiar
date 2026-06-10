@@ -3,7 +3,6 @@
 import json
 import logging
 import time
-from typing import Optional
 
 import seer
 from langchain_core.tools import tool
@@ -79,7 +78,7 @@ def seer_rdap_asn(asn: int) -> str:
 
 
 @tool
-def seer_dig(domain: str, record_type: str = "A", nameserver: Optional[str] = None) -> str:
+def seer_dig(domain: str, record_type: str = "A", nameserver: str | None = None) -> str:
     """Query DNS records for a domain (like the dig command). Supports record types: A, AAAA, MX, TXT, NS, SOA, CNAME, CAA, PTR, SRV, ANY."""
     return _seer_call(seer.dig, domain, record_type, nameserver, op="seer_dig")
 
@@ -162,7 +161,7 @@ def seer_dns_compare(domain: str, record_type: str, server_a: str, server_b: str
 
 
 @tool
-def seer_dns_follow(domain: str, record_type: str = "A", nameserver: Optional[str] = None, iterations: int = 3, interval_minutes: float = 1.0) -> str:
+def seer_dns_follow(domain: str, record_type: str = "A", nameserver: str | None = None, iterations: int = 3, interval_minutes: float = 1.0) -> str:
     """Monitor DNS record changes over time. Queries the record repeatedly at the specified interval and reports changes between iterations."""
     iterations = max(1, min(iterations, 10))
     interval_minutes = max(0.1, min(interval_minutes, 5.0))

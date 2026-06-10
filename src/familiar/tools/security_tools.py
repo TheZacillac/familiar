@@ -214,7 +214,7 @@ def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
             rcode = resp_flags & 0x000F
 
             if rcode in (5, 9):
-                return {"success": False, "error": "Transfer refused (RCODE={})".format(rcode)}
+                return {"success": False, "error": f"Transfer refused (RCODE={rcode})"}
 
             if rcode != 0:
                 return {"success": False, "error": f"DNS error RCODE={rcode}"}
@@ -232,7 +232,7 @@ def _attempt_axfr(nameserver: str, domain: str, timeout: float = 5.0) -> dict:
         finally:
             sock.close()
 
-    except socket.timeout:
+    except TimeoutError:
         return {"success": False, "error": "Connection timed out"}
     except ConnectionRefusedError:
         return {"success": False, "error": "Connection refused (port 53/TCP closed)"}
@@ -427,7 +427,7 @@ def _mta_sts_check_impl(domain: str) -> dict:
         findings.append({
             "severity": "HIGH",
             "finding": "MTA-STS policy file exists but TXT record is missing",
-            "detail": f"Senders will not discover the policy without the _mta-sts TXT record",
+            "detail": "Senders will not discover the policy without the _mta-sts TXT record",
             "recommendation": f"Add a TXT record at _mta-sts.{domain} with v=STSv1; id=<unique-id>",
         })
     elif not sts_txt_info["found"] and not sts_policy_info["found"] and has_mx:
@@ -435,7 +435,7 @@ def _mta_sts_check_impl(domain: str) -> dict:
             "severity": "MEDIUM",
             "finding": "No MTA-STS configured for domain with MX records",
             "detail": "Without MTA-STS, email can be delivered over unencrypted connections (STARTTLS downgrade)",
-            "recommendation": f"Deploy MTA-STS: add _mta-sts TXT record and publish policy at .well-known/mta-sts.txt",
+            "recommendation": "Deploy MTA-STS: add _mta-sts TXT record and publish policy at .well-known/mta-sts.txt",
         })
 
     # --- TLS-RPT Record ---

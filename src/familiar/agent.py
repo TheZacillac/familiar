@@ -3,8 +3,8 @@
 import os
 
 import scrolls
-from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
+from langchain.chat_models import init_chat_model
 
 from . import config
 from .tools import ALL_TOOLS
@@ -224,7 +224,7 @@ def _load_skill_docs() -> str:
     """Load skill documentation from scrolls to enrich the system prompt.
 
     Honors ``[agent].skill_docs_level``: ``"minimal"`` drops every
-    ``reference/*.md`` file (recommended for local 8k–32k context
+    ``reference/*.md`` file (recommended for local 8k-32k context
     models); the default ``"full"`` loads everything.
     """
     level = config.get("agent", "skill_docs_level", "full")

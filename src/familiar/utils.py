@@ -2,7 +2,7 @@
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import config
 
@@ -140,8 +140,8 @@ def days_until(raw) -> int | None:
             # Fall back to date-only (first 10 chars), assume UTC
             dt = datetime.fromisoformat(s[:10])
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
         return (dt - now).days
     except (ValueError, TypeError):
         return None

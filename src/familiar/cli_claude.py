@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import warnings
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 warnings.filterwarnings("ignore", message="Core Pydantic V1")
 
@@ -76,7 +76,7 @@ def _unprefix(tool_name: str) -> str:
 
 def _wrap_query(content: str) -> str:
     """Prepend the current UTC timestamp, matching cli.py's behavior."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     return f"[Current date/time: {now}]\n\n{content}"
 
 
@@ -94,13 +94,15 @@ async def _consume_response(client: ClaudeSDKClient, status) -> str | None:
                 elif isinstance(block, TextBlock) and block.text:
                     final_chunks.append(block.text)
                     status.update("[spinner]Composing response...[/spinner]")
-        elif isinstance(message, ResultMessage):
-            if getattr(message, "subtype", "success") != "success":
-                error = (
-                    getattr(message, "result", None)
-                    or getattr(message, "error", None)
-                    or "agent stopped without success"
-                )
+        elif (
+            isinstance(message, ResultMessage)
+            and getattr(message, "subtype", "success") != "success"
+        ):
+            error = (
+                getattr(message, "result", None)
+                or getattr(message, "error", None)
+                or "agent stopped without success"
+            )
 
     if error:
         console.print(f"[error]Agent error: {error}[/error]")
@@ -181,9 +183,8 @@ async def _repl() -> None:
             if not q.strip() or q.strip().lower() in ("quit", "exit"):
                 break
 
-            if q.strip().startswith("/"):
-                if await _handle_slash(client, q):
-                    continue
+            if q.strip().startswith("/") and await _handle_slash(client, q):
+                continue
 
             await _ask(client, q)
 
