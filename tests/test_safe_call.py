@@ -101,3 +101,28 @@ class TestErrorCollection:
             return "ok"
         safe_call(echo_kwargs, _errors=[], _op="custom", x=1)
         assert captured == {"x": 1}, "Internal _errors/_op leaked into fn kwargs"
+
+
+class TestTrySsl:
+    """utils.try_ssl — shared error-preserving TLS probe body."""
+
+    def test_success_passthrough(self):
+        from familiar.utils import try_ssl
+
+        class FakeSeer:
+            @staticmethod
+            def ssl(domain):
+                return {"is_valid": True, "domain": domain}
+
+        assert try_ssl("x.com", FakeSeer)["is_valid"] is True
+
+    def test_failure_returns_sentinel(self):
+        from familiar.utils import ssl_probe_error, try_ssl
+
+        class FakeSeer:
+            @staticmethod
+            def ssl(domain):
+                raise ConnectionError("refused")
+
+        result = try_ssl("x.com", FakeSeer)
+        assert ssl_probe_error(result) == "refused"

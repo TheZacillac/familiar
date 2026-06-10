@@ -74,6 +74,12 @@ class TestToolGroupCounts:
     def test_pentest_tools_count(self):
         assert len(PENTEST_TOOLS) == 7
 
+    def test_security_tools_count(self):
+        assert len(SECURITY_TOOLS) == 5
+
+    def test_snapshot_tools_count(self):
+        assert len(SNAPSHOT_TOOLS) == 3
+
     def test_memory_tools_count(self):
         assert len(MEMORY_TOOLS) == 9
 

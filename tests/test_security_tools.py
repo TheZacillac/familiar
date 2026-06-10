@@ -185,6 +185,20 @@ class TestWebsiteFingerprint:
 
     @patch("familiar.tools.security_tools._fetch_http_headers")
     @patch("familiar.tools.security_tools.seer")
+    def test_cdn_detected_from_cname(self, mock_seer, mock_fetch):
+        """CNAME-based CDN detection reuses the shared _CDN_PATTERNS table
+        instead of re-implementing a subset of it."""
+        mock_fetch.return_value = {"success": False}
+        mock_seer.dig.side_effect = lambda d, rtype, *a: (
+            [{"data": {"target": "example.cdn.cloudflare.net."}}]
+            if rtype == "CNAME" else []
+        )
+        result = json.loads(website_fingerprint.invoke({"domain": "example.com"}))
+        names = [t["name"] for t in result["technologies"]]
+        assert "Cloudflare" in names
+
+    @patch("familiar.tools.security_tools._fetch_http_headers")
+    @patch("familiar.tools.security_tools.seer")
     def test_detects_technologies(self, mock_seer, mock_fetch):
         mock_seer.dig.return_value = []
         mock_seer.status.return_value = {"http_status": 200}

@@ -104,6 +104,54 @@ def parallel_calls(*call_specs, errors: list | None = None):
     return results
 
 
+def try_ssl(domain: str, seer_module):
+    """Call ``seer_module.ssl(domain)``, preserving the error on failure.
+
+    Returns the normal ``seer.ssl`` dict on success or the sentinel
+    ``{"_ssl_error": "..."}`` — pair with :func:`ssl_probe_error`.
+
+    Takes the seer module as a parameter so each tool module can keep a
+    two-line ``_try_ssl`` wrapper that resolves its own module-global
+    ``seer`` at call time — ``@patch("familiar.tools.<module>.seer")``
+    in tests keeps intercepting the probe.
+    """
+    try:
+        return seer_module.ssl(domain)
+    except Exception as e:
+        return {"_ssl_error": str(e)}
+
+
+# Multi-level public suffixes for SLD/effective-TLD splitting (shared by
+# advisor SLD analysis and pentest SAN classification — two diverging
+# copies of this set previously misclassified e.g. *.gov.au names).
+# Not exhaustive like the Public Suffix List — common commercial ccTLDs only.
+MULTI_LEVEL_TLDS = frozenset({
+    "co.uk", "org.uk", "me.uk", "ac.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au",
+    "co.nz", "net.nz", "org.nz", "ac.nz", "govt.nz",
+    "co.jp", "ne.jp", "or.jp",
+    "co.kr", "or.kr",
+    "co.in", "net.in", "org.in",
+    "com.br", "net.br", "org.br",
+    "co.za",
+    "com.mx",
+    "com.cn", "net.cn", "org.cn",
+    "com.tw", "net.tw", "org.tw",
+    "co.il",
+    "com.sg",
+    "com.hk",
+    "co.th",
+    "com.ar",
+    "co.id", "or.id",
+    "com.co", "net.co",
+    "com.tr", "org.tr",
+    "com.ph",
+    "com.my",
+    "com.ng",
+    "co.ke",
+})
+
+
 def ssl_probe_error(ssl_data) -> str | None:
     """Return the probe-failure message when *ssl_data* is a ``_try_ssl``
     sentinel, else ``None``.

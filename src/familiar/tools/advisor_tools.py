@@ -7,6 +7,7 @@ import seer
 import tome
 from langchain_core.tools import tool
 
+from ..email_auth import parse_dmarc_tags, parse_spf_all_qualifier
 from ..seer_shape import (
     lookup_to_registration,
     record_field,
@@ -14,22 +15,14 @@ from ..seer_shape import (
     status_certificate,
     unwrap_bulk,
 )
+from ..utils import MULTI_LEVEL_TLDS, parallel_calls, safe_call, ssl_probe_error, try_ssl
 from ..utils import days_until as _days_until
-from ..utils import parallel_calls, safe_call, ssl_probe_error
 
 
 def _try_ssl(domain: str):
-    """Call ``seer.ssl(domain)`` and preserve the error string on failure.
-
-    Local to this module so ``@patch("familiar.tools.advisor_tools.seer")``
-    in tests still intercepts the SSL call. Returns a normal ``seer.ssl``
-    result dict on success or a sentinel ``{"_ssl_error": "..."}`` dict
-    on failure.
-    """
-    try:
-        return seer.ssl(domain)
-    except Exception as e:
-        return {"_ssl_error": str(e)}
+    """Error-preserving TLS probe; resolves this module's ``seer`` at call
+    time so ``@patch("familiar.tools.advisor_tools.seer")`` keeps working."""
+    return try_ssl(domain, seer)
 
 # Underscore aliases preserved so existing call sites (and the
 # test_extract_registration test file) keep working — the canonical
@@ -38,32 +31,9 @@ _unwrap_bulk = unwrap_bulk
 _get_cert = status_certificate
 _extract_registration = lookup_to_registration
 
-# Known multi-level TLD suffixes for correct SLD extraction
-_MULTI_LEVEL_TLDS = frozenset({
-    "co.uk", "org.uk", "me.uk", "ac.uk",
-    "com.au", "net.au", "org.au", "edu.au", "gov.au",
-    "co.nz", "net.nz", "org.nz", "ac.nz", "govt.nz",
-    "co.jp", "ne.jp", "or.jp",
-    "co.kr", "or.kr",
-    "co.in", "net.in", "org.in",
-    "com.br", "net.br", "org.br",
-    "co.za",
-    "com.mx",
-    "com.cn", "net.cn", "org.cn",
-    "com.tw", "net.tw", "org.tw",
-    "co.il",
-    "com.sg",
-    "com.hk",
-    "co.th",
-    "com.ar",
-    "co.id", "or.id",
-    "com.co", "net.co",
-    "com.tr", "org.tr",
-    "com.ph",
-    "com.my",
-    "com.ng",
-    "co.ke",
-})
+# Known multi-level TLD suffixes for correct SLD extraction —
+# shared with pentest SAN classification (utils.MULTI_LEVEL_TLDS).
+_MULTI_LEVEL_TLDS = MULTI_LEVEL_TLDS
 
 
 # --- EPP Status Code Classification (RFC 5731) ---
@@ -1018,15 +988,15 @@ def security_audit(domain: str) -> str:
             txt_lower = txt.lower()
             if "v=spf1" in txt_lower:
                 email_security["spf"] = {"found": True, "record": txt}
-                # Check for common SPF issues
-                if "-all" in txt_lower:
-                    email_security["spf"]["policy"] = "strict"
-                elif "~all" in txt_lower:
-                    email_security["spf"]["policy"] = "softfail"
-                elif "?all" in txt_lower:
-                    email_security["spf"]["policy"] = "neutral"
-                elif "+all" in txt_lower:
-                    email_security["spf"]["policy"] = "permissive_INSECURE"
+                qualifier = parse_spf_all_qualifier(txt)
+                policy = {
+                    "-": "strict",
+                    "~": "softfail",
+                    "?": "neutral",
+                    "+": "permissive_INSECURE",
+                }.get(qualifier)
+                if policy:
+                    email_security["spf"]["policy"] = policy
 
     if dmarc_records and isinstance(dmarc_records, list):
         for record in dmarc_records:
@@ -1034,12 +1004,14 @@ def security_audit(domain: str) -> str:
             txt_lower = txt.lower()
             if "v=dmarc1" in txt_lower:
                 email_security["dmarc"] = {"found": True, "record": txt}
-                if "p=reject" in txt_lower:
-                    email_security["dmarc"]["policy"] = "reject"
-                elif "p=quarantine" in txt_lower:
-                    email_security["dmarc"]["policy"] = "quarantine"
-                elif "p=none" in txt_lower:
-                    email_security["dmarc"]["policy"] = "none_MONITORING_ONLY"
+                p_tag = parse_dmarc_tags(txt).get("p", "").lower()
+                policy = {
+                    "reject": "reject",
+                    "quarantine": "quarantine",
+                    "none": "none_MONITORING_ONLY",
+                }.get(p_tag)
+                if policy:
+                    email_security["dmarc"]["policy"] = policy
 
     # HTTP security check via status (status_data already fetched above)
     http_security = {"status": "unknown"}
@@ -1707,11 +1679,14 @@ def _audit_one(domain: str) -> dict:
         for rec in txt_records:
             txt = record_text(rec).lower()
             if "v=spf1" in txt:
-                if "-all" in txt:
+                qualifier = parse_spf_all_qualifier(txt)
+                if qualifier == "-":
                     email_section["spf"] = "strict"
-                elif "~all" in txt:
+                elif qualifier == "~":
                     email_section["spf"] = "softfail"
-                elif "+all" in txt:
+                elif qualifier == "?":
+                    email_section["spf"] = "neutral"
+                elif qualifier == "+":
                     email_section["spf"] = "permissive_INSECURE"
                     risk_score += 3
                 else:
@@ -1721,11 +1696,12 @@ def _audit_one(domain: str) -> dict:
         for rec in dmarc_records:
             txt = record_text(rec).lower()
             if "v=dmarc1" in txt:
-                if "p=reject" in txt:
+                p_tag = parse_dmarc_tags(txt).get("p", "").lower()
+                if p_tag == "reject":
                     email_section["dmarc"] = "reject"
-                elif "p=quarantine" in txt:
+                elif p_tag == "quarantine":
                     email_section["dmarc"] = "quarantine"
-                elif "p=none" in txt:
+                elif p_tag == "none":
                     email_section["dmarc"] = "none"
                     risk_score += 1
                 else:

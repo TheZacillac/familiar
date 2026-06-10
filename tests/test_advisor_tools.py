@@ -630,6 +630,43 @@ class TestSecurityAudit:
             for r in result["recommendations"]
         )
 
+    @patch("familiar.tools.advisor_tools.seer")
+    def test_dmarc_sp_tag_not_mistaken_for_policy(self, mock_seer):
+        """sp=none must not register as p=none (substring-matching bug)."""
+        mock_seer.ssl.return_value = _ssl_report(valid=True)
+        mock_seer.dnssec.return_value = _dnssec_data()
+        sp_only = [{"data": {"text": "v=DMARC1; sp=none; rua=mailto:agg@x.com"}}]
+        mock_seer.dig.side_effect = _dig_router(
+            TXT=_txt_records_spf(),
+            MX=_mx_records(),
+            **{"_dmarc.TXT": sp_only},
+        )
+        mock_seer.status.return_value = _status_data()
+
+        result = json.loads(security_audit.invoke({"domain": "sp-only.com"}))
+
+        assert result["email_security"]["dmarc"]["found"] is True
+        # No p= tag → no policy claim (previously misread as monitoring-only)
+        assert "policy" not in result["email_security"]["dmarc"]
+
+    @patch("familiar.tools.advisor_tools.seer")
+    def test_spf_bare_all_flagged_permissive(self, mock_seer):
+        """A bare 'all' mechanism is +all per RFC 7208 and must be flagged."""
+        mock_seer.ssl.return_value = _ssl_report(valid=True)
+        mock_seer.dnssec.return_value = _dnssec_data()
+        bare_all = [{"data": {"text": "v=spf1 a mx all"}}]
+        mock_seer.dig.side_effect = _dig_router(
+            TXT=bare_all,
+            MX=_mx_records(),
+            **{"_dmarc.TXT": _txt_records_dmarc()},
+        )
+        mock_seer.status.return_value = _status_data()
+
+        result = json.loads(security_audit.invoke({"domain": "bare-all.com"}))
+
+        assert result["email_security"]["spf"]["policy"] == "permissive_INSECURE"
+        assert result["risk_score"] >= 3
+
 
 # ===================================================================
 # 8. brand_protection_scan

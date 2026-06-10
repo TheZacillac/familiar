@@ -17,21 +17,13 @@ from langchain_core.tools import tool
 
 from ..findings import sort_findings
 from ..seer_shape import record_field, record_text, record_value_dict
-from ..utils import parallel_calls, safe_call, ssl_probe_error
+from ..utils import parallel_calls, safe_call, ssl_probe_error, try_ssl
 
 
 def _try_ssl(domain: str):
-    """Call ``seer.ssl(domain)`` and preserve the error string on failure.
-
-    Local to this module so ``@patch("familiar.tools.security_tools.seer")``
-    in tests still intercepts the SSL call. Returns a normal ``seer.ssl``
-    result dict on success or a sentinel ``{"_ssl_error": "..."}`` dict
-    on failure.
-    """
-    try:
-        return seer.ssl(domain)
-    except Exception as e:
-        return {"_ssl_error": str(e)}
+    """Error-preserving TLS probe; resolves this module's ``seer`` at call
+    time so ``@patch("familiar.tools.security_tools.seer")`` keeps working."""
+    return try_ssl(domain, seer)
 
 # --- DNS-based blocklist providers ---
 # Each entry: (name, zone_suffix, query_type, description)
@@ -782,11 +774,11 @@ def website_fingerprint(domain: str) -> str:
             })
 
     security_headers = {}
-    raw_headers = {}
+    headers_available = False
 
     if header_data and isinstance(header_data, dict) and header_data.get("success"):
         headers = header_data.get("headers", {})
-        raw_headers = dict(headers)
+        headers_available = bool(headers)
 
         # Header-based detection
         for header_field, pattern, tech_name, category in _TECH_FINGERPRINTS:
@@ -811,10 +803,18 @@ def website_fingerprint(domain: str) -> str:
 
     # DNS-based detection (CNAME fingerprinting)
     if cname_records and isinstance(cname_records, list):
+        # Call-time import: pentest_tools imports this module at load, so a
+        # module-level import here would be circular. Same pattern as
+        # advisor_tools' CDN reuse.
+        from .pentest_tools import _identify_cdn_from_cname
+
         for rec in cname_records:
             target = record_field(rec, "target") or record_field(rec, "cname")
             target = target.lower().rstrip(".")
             if target:
+                cdn = _identify_cdn_from_cname(target)
+                if cdn:
+                    _add_tech(cdn, "CDN/WAF", f"CNAME → {target}")
                 if "shopify" in target:
                     _add_tech("Shopify", "E-Commerce Platform", f"CNAME → {target}")
                 elif "squarespace" in target:
@@ -856,7 +856,7 @@ def website_fingerprint(domain: str) -> str:
         "security_headers": security_headers,
         "security_header_count": len(security_headers),
         "total_technologies": len(technologies),
-        "headers_available": bool(raw_headers),
+        "headers_available": headers_available,
     }, default=str)
 
 

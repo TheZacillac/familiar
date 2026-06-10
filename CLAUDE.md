@@ -12,20 +12,29 @@ familiar/
 ├── config.default.toml          # Default config — copy to ~/.familiar/config.toml
 ├── .env                         # Local environment overrides (gitignored)
 ├── .env.example                 # Environment template
+├── .github/workflows/ci.yml     # CI: ruff + pytest (builds sibling PyO3 deps)
 └── src/familiar/
     ├── __init__.py               # Version: 0.1.0
     ├── config.py                 # TOML config loader (~/.familiar/config.toml)
-    ├── cli.py                    # CLI entry point (REPL + single-query)
-    ├── agent.py                  # LangGraph Deep Agent builder
+    ├── cli.py                    # CLI entry point (REPL + single-query + escalation routing)
+    ├── cli_claude.py             # Alternative CLI on claude-agent-sdk
+    ├── cli_common.py             # Engine-agnostic CLI primitives (slash commands, handlers)
+    ├── agent.py                  # LangGraph Deep Agent builder (fast + power tiers)
+    ├── agent_claude.py           # claude-agent-sdk agent builder
     ├── memory.py                 # SQLite persistence (domain notebook, watchlist, prefs)
-    ├── utils.py                  # Shared utilities (safe_call, days_until)
+    ├── findings.py               # Finding severity ordering/counting
+    ├── seer_shape.py             # Anti-corruption layer over seer record shapes
+    ├── email_auth.py             # Shared SPF/DMARC record parsers
+    ├── utils.py                  # Shared utilities (safe_call, parallel_calls, try_ssl)
     └── tools/
         ├── __init__.py           # Exports ALL_TOOLS (76 total)
-        ├── seer_tools.py         # 24 Seer tools (LangChain @tool wrappers)
-        ├── tome_tools.py         # 9 Tome tools (LangChain @tool wrappers)
-        ├── advisor_tools.py      # 11 Advisory tools (6 strategic + 5 composite)
+        ├── seer_tools.py         # 25 Seer tools (LangChain @tool wrappers)
+        ├── tome_tools.py         # 10 Tome tools (LangChain @tool wrappers)
+        ├── advisor_tools.py      # 12 Advisory tools (6 strategic + 6 composite)
         ├── pentest_tools.py      # 7 Pentest tools (security scanning composites)
-        └── memory_tools.py       # 13 Memory + workflow tools
+        ├── security_tools.py     # 5 Security tools (DNSBL, AXFR, MTA-STS, DANE, fingerprint)
+        ├── memory_tools.py       # 16 Memory + snapshot + workflow tools
+        └── escalation_tools.py   # 1 Escalation tool (fast → power handoff)
 ```
 
 ---
@@ -35,10 +44,11 @@ familiar/
 ### Agent Construction Flow (agent.py)
 
 1. **`_load_env()`** — reads `.env` manually (no python-dotenv dependency), sets env vars with `setdefault`
-2. **`_load_skill_docs()`** — uses `scrolls` to discover and load SKILL.md + reference docs for each skill
-3. **`_build_system_prompt()`** — base prompt ("You are Familiar, a domain name intelligence assistant...") + merged skill documentation
-4. **`_build_model_kwargs()`** — extracts provider from `FAMILIAR_MODEL`, builds provider-specific kwargs
-5. **`build_agent()`** — uses `langchain_core.chat_models.init_chat_model()` + `deepagents.create_deep_agent()` with all tools and system prompt
+2. **`_load_skill_docs()`** — uses `scrolls` to discover and load skill docs (cached per level; `agent.skill_docs_level` controls depth, default `minimal`)
+3. **`_build_system_prompt()`** — base prompt ("You are Familiar...") + merged skill documentation
+4. **`config.model_kwargs()`** — derives provider-specific kwargs (e.g. Ollama base_url) from the configured model id
+5. **`build_agent()`** — `init_chat_model()` + `deepagents.create_deep_agent()` with all tools and system prompt, using the fast-tier model
+6. **`build_power_agent()`** — same construction with the power-tier model and the `escalate` tool removed; the CLI invokes it when the fast model's `escalate` call appears in the stream (see `_run_power` in cli.py)
 
 ### Agent Invocation
 
@@ -135,11 +145,13 @@ Env vars override config file values for backward compatibility.
 | Variable | Config equivalent | Default | Purpose |
 |----------|-------------------|---------|---------|
 | `FAMILIAR_MODEL` | `model.default` | `ollama:nemotron-3-nano:latest` | LLM in `provider:model` format |
+| `FAMILIAR_MODEL_FAST` | `model.fast` | — | Fast-tier model (falls back to `model.default`) |
+| `FAMILIAR_MODEL_POWER` | `model.power` | — | Power-tier model for `escalate` handoffs |
 | `OLLAMA_BASE_URL` | `model.ollama.base_url` | `http://localhost:11434` | Ollama server URL |
 | `FAMILIAR_DATA_DIR` | `storage.data_dir` | `~/.familiar` | Base data directory |
 | `FAMILIAR_DB_NAME` | `storage.db_name` | `familiar.db` | SQLite database filename |
 | `FAMILIAR_EXPORT_DIR` | `storage.export_dir` | `~/.familiar/exports` | Export output directory |
-| `FAMILIAR_MAX_WORKERS` | `agent.max_workers` | `12` | Parallel thread pool size |
+| `FAMILIAR_MAX_WORKERS` | `agent.max_workers` | `32` | Parallel thread pool size |
 | `OPENAI_API_KEY` | — | — | OpenAI API key |
 | `ANTHROPIC_API_KEY` | — | — | Anthropic API key |
 | `GOOGLE_API_KEY` | — | — | Google Gemini API key |
